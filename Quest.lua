@@ -9,15 +9,15 @@ local function split(text, separator, max)
 end
 local function serialiseSteps(steps)
   local out={}
-  for i,s in ipairs(steps) do out[i]=table.concat({QW:Escape(s.type or ""),QW:Escape(s.itemID or ""),QW:Escape(s.count or ""),QW:Escape(s.placeID or ""),QW:Escape(s.mobName or ""),QW:Escape(s.text or "")}, "~") end
+  for i,s in ipairs(steps) do out[i]=table.concat({QW:Escape(s.type or ""),QW:Escape(s.itemID or ""),QW:Escape(s.count or ""),QW:Escape(s.placeID or ""),QW:Escape(s.mobName or ""),QW:Escape(s.text or ""),QW:Escape(s.stepNumber or i)}, "~") end
   return table.concat(out,";")
 end
 local function parseSteps(raw)
   local out={}
   for line in string.gmatch(raw or "", "[^;]+") do
-    local p=split(line,"~",6); local fields=QW.Count(p)
+    local p=split(line,"~",7); local fields=QW.Count(p)
     -- Version 1 quests had four fields: type, item, count, text.
-    if fields==4 then p[6]=p[4]; p[4]=""; p[5]="" elseif fields~=6 then return nil end
+    if fields==4 then p[6]=p[4]; p[4]=""; p[5]=""; p[7]="" elseif fields==6 then p[7]="" elseif fields~=7 then return nil end
     local i; for i=1,6 do p[i]=QW:Unescape(p[i]); if not p[i] then return nil end end; local count=tonumber(p[3] or "")
     if (p[1]~="dialogue" and p[1]~="possess" and p[1]~="deliver" and p[1]~="manual" and p[1]~="visit" and p[1]~="loot" and p[1]~="collect" and p[1]~="kill") or not QW:ValidateString(p[6],300) then return nil end
     if (p[1]=="possess" or p[1]=="deliver" or p[1]=="loot" or p[1]=="collect") and (not QW:ValidateString(p[2],120) or not count or count<1 or count>999) then return nil end
@@ -25,9 +25,11 @@ local function parseSteps(raw)
     if p[1]=="loot" and (not QW:ValidateString(p[4],80) or not QW:ValidateString(p[5],100)) then return nil end
     if p[1]=="collect" and not QW:ValidateString(p[4],80) then return nil end
     local npcID=tonumber(string.match(p[5] or "","^npc:(%d+)$")); local hasNPCPrefix=string.find(p[5] or "","^npc:")
+    local stepNumber=tonumber(p[7]); if p[7]=="" then stepNumber=QW.Count(out)+1 end
+    if not stepNumber or stepNumber<1 or stepNumber>99 or stepNumber~=math.floor(stepNumber) then return nil end
     if hasNPCPrefix and not npcID then return nil end
     if p[1]=="kill" and (not count or count<1 or count>999 or not QW:ValidateString(p[5],100)) then return nil end
-    out[QW.Count(out)+1]={type=p[1],itemID=p[2],count=count,placeID=p[4],mobName=p[5],npcID=npcID,text=p[6]}; if QW.Count(out)>12 then return nil end
+    out[QW.Count(out)+1]={type=p[1],itemID=p[2],count=count,placeID=p[4],mobName=p[5],npcID=npcID,text=p[6],stepNumber=stepNumber}; if QW.Count(out)>12 then return nil end
   end
   return QW.Count(out)>0 and out or nil
 end
@@ -89,7 +91,50 @@ local function parseDefinitions(raw)
   end
   return definitions
 end
+function QW:EnsureQuestItemCategories()
+  local function classify(record,rewardID)
+    if not record then return end
+    local reward=record.reward or (rewardID and self.db.items[rewardID])
+    if reward then reward.category="reward"; if reward.id and self.db.items[reward.id] then self.db.items[reward.id].category="reward" end end
+    for _,step in ipairs(record.steps or {}) do
+      local id=step.itemID
+      if id and id~="" then
+        if record.itemDefinitions and record.itemDefinitions[id] then record.itemDefinitions[id].category="quest" end
+        if self.db.items[id] then self.db.items[id].category="quest" end
+      end
+    end
+  end
+  for id,quest in pairs(self.db.quests or {}) do
+    classify(quest,quest.rewardID)
+    if quest.repeatable==nil then quest.repeatable=quest.giverNPCID~=nil end
+    local run=self.db.questRuns[id]
+    if run and run.repeatable==nil then run.repeatable=quest.repeatable end
+  end
+  for id,run in pairs(self.db.questRuns or {}) do
+    classify(run)
+    if run.repeatable==nil then
+      local definition=self.db.quests[id]
+      if definition then run.repeatable=definition.repeatable
+      else run.repeatable=run.giverNPCID~=nil or run.acceptedFromNPC~=nil end
+    end
+  end
+  for _,offer in pairs(self.db.questOffers or {}) do
+    classify(offer)
+    if offer.repeatable==nil then offer.repeatable=offer.giverNPCID~=nil end
+  end
+  for _,quest in pairs(self.db.followUpDefinitions or {}) do
+    classify(quest)
+    if quest.repeatable==nil then quest.repeatable=quest.giverNPCID~=nil end
+  end
+end
+function QW:KeepQuestItemDefinitions(record)
+  for id,item in pairs(record and record.itemDefinitions or {}) do
+    if not self.db.items[id] then self.db.items[id]=self:Copy(item)
+    elseif item.category=="quest" or item.category=="reward" then self.db.items[id].category=item.category end
+  end
+end
 function QW:RegisterQuest()
+  self:EnsureQuestItemCategories()
   -- Keep registration results so kill diagnostics can distinguish an event
   -- API mismatch from a target/matching problem instead of silently failing.
   self.killEventRegistration={}
@@ -112,7 +157,19 @@ local function optionalNPCID(value)
   local id=tonumber(string.match(tostring(value),"^npc:(%d+)$"))
   return id and id>0 and id or false
 end
-local function shareFields(q)
+local function optionalSuggestedLevel(value)
+  if value==nil or value=="" then return nil end
+  local level=tonumber(value)
+  if not level or level<1 or level>999 or level~=math.floor(level) then return false end
+  return level
+end
+local function optionalSuggestedPlayers(value)
+  if value==nil or value=="" then return nil end
+  local players=tonumber(value)
+  if not players or players<1 or players>40 or players~=math.floor(players) then return false end
+  return players
+end
+local function shareFields(q,giverOverride)
   local reward=QW.db.items[q.rewardID]
   if not reward then return nil,"The quest reward definition is missing." end
   local j; for j=1,QW.Count(q.places or {}) do if not q.places[j].zone then return nil,"This older quest uses RP-only places; recreate it with a real zone/location." end end
@@ -120,19 +177,29 @@ local function shareFields(q)
   local i; for i=1,QW.Count(q.steps or {}) do local itemID=q.steps[i].itemID; if itemID~="" then q.itemDefinitions[itemID]=q.itemDefinitions[itemID] or QW.db.items[itemID] end end
   local followUpID=optionalQuestID(q.followUpQuestID)
   if followUpID==false then return nil,"The follow-up quest ID is invalid." end
-  local giverNPCID=q.giverNPCID
+  local giverNPCID=giverOverride and giverOverride.npcID or q.giverNPCID
   if giverNPCID and (type(giverNPCID)~="number" or giverNPCID<1) then return nil,"The quest giver NPC ID is invalid." end
-  if ((q.giverPlaceID and q.giverPlaceID~="") or (q.giverDialogue and q.giverDialogue~="")) and not giverNPCID then return nil,"Quest giver dialogue needs a quest giver NPC." end
-  if q.giverPlaceID and q.giverPlaceID~="" and not QW:ValidateString(q.giverPlaceID,80) then return nil,"The quest giver place ID is invalid." end
-  if q.giverDialogue and q.giverDialogue~="" and not QW:ValidateString(q.giverDialogue,500) then return nil,"The quest giver dialogue is invalid." end
+  local giverPlaceID=giverOverride and "" or q.giverPlaceID or ""
+  local giverDialogue=giverOverride and giverOverride.dialogue or q.giverDialogue or ""
+  if ((giverPlaceID and giverPlaceID~="") or (giverDialogue and giverDialogue~="")) and not giverNPCID then return nil,"Quest giver dialogue needs a quest giver NPC." end
+  if giverPlaceID and giverPlaceID~="" and not QW:ValidateString(giverPlaceID,80) then return nil,"The quest giver place ID is invalid." end
+  if giverDialogue and giverDialogue~="" and not QW:ValidateString(giverDialogue,500) then return nil,"The quest giver dialogue is invalid." end
   local turnInNPCID=q.turnInNPCID
   if turnInNPCID and (type(turnInNPCID)~="number" or turnInNPCID<1) then return nil,"The reward NPC ID is invalid." end
-  return {q.id,q.version,q.title,q.description,serialiseSteps(q.steps),QW:SerializeItem(reward),q.rewardCount,serialisePlaces(q.places),definitionWire(q.itemDefinitions),followUpID or "",giverNPCID and ("npc:"..giverNPCID) or "",q.giverPlaceID or "",q.giverDialogue or "",turnInNPCID and ("npc:"..turnInNPCID) or ""}
+  return {q.id,q.version,q.title,q.description,serialiseSteps(q.steps),QW:SerializeItem(reward),q.rewardCount,serialisePlaces(q.places),definitionWire(q.itemDefinitions),followUpID or "",giverNPCID and ("npc:"..giverNPCID) or "",giverPlaceID or "",giverDialogue or "",turnInNPCID and ("npc:"..turnInNPCID) or "",q.repeatable and "1" or "0",q.suggestedLevel or "",q.suggestedPlayers or ""}
 end
 local function decodeSharedQuest(f,offset,sender)
-  if QW.Count(f)<offset+8 or QW.Count(f)>offset+13 then return nil end
+  if QW.Count(f)<offset+8 or QW.Count(f)>offset+16 then return nil end
   local id,ver=f[offset],tonumber(f[offset+1]); local steps=parseSteps(f[offset+4]); local reward=QW:ParseItem(f[offset+5]); local count=tonumber(f[offset+6]); local places,placeByID=parsePlaces(f[offset+7]); local definitions=parseDefinitions(f[offset+8]); local followUpID=optionalQuestID(f[offset+9])
   local giverNPCID=optionalNPCID(f[offset+10]); local giverPlaceID=f[offset+11] or ""; local giverDialogue=f[offset+12] or ""; local turnInNPCID=optionalNPCID(f[offset+13])
+  local repeatField=f[offset+14]
+  if repeatField~=nil and repeatField~="0" and repeatField~="1" then return nil end
+  local repeatable
+  if repeatField~=nil then repeatable=repeatField=="1" else repeatable=giverNPCID~=nil end
+  local suggestedLevel=optionalSuggestedLevel(f[offset+15])
+  if suggestedLevel==false then return nil end
+  local suggestedPlayers=optionalSuggestedPlayers(f[offset+16])
+  if suggestedPlayers==false then return nil end
   if not QW:ValidateString(id,120) or not ver or not QW:ValidateString(f[offset+2] or "",100) or not QW:ValidateString(f[offset+3] or "",500) or not steps or not reward or not count or count<1 or count>999 or not places or not definitions or followUpID==false or followUpID==id or giverNPCID==false or turnInNPCID==false or (giverNPCID==nil and (giverPlaceID~="" or giverDialogue~="")) or (giverPlaceID~="" and not QW:ValidateString(giverPlaceID,80)) or (giverDialogue~="" and not QW:ValidateString(giverDialogue,500)) then return nil end
   definitions[reward.id]=definitions[reward.id] or reward
   local i; for i=1,QW.Count(steps) do
@@ -143,13 +210,18 @@ local function decodeSharedQuest(f,offset,sender)
   reward.category="reward"
   for i=1,QW.Count(steps) do local itemID=steps[i].itemID; if itemID~="" and definitions[itemID] then definitions[itemID].category="quest" end end
   if giverPlaceID~="" and not placeByID[giverPlaceID] then return nil end
-  return {id=id,owner=sender,title=f[offset+2],description=f[offset+3],steps=steps,places=places,placeByID=placeByID,itemDefinitions=definitions,reward=reward,rewardCount=count,version=ver,followUpQuestID=followUpID,giverNPCID=giverNPCID,giverPlaceID=giverPlaceID,giverDialogue=giverDialogue,turnInNPCID=turnInNPCID}
+  return {id=id,owner=sender,title=f[offset+2],description=f[offset+3],steps=steps,places=places,placeByID=placeByID,itemDefinitions=definitions,reward=reward,rewardCount=count,version=ver,followUpQuestID=followUpID,giverNPCID=giverNPCID,giverPlaceID=giverPlaceID,giverDialogue=giverDialogue,turnInNPCID=turnInNPCID,repeatable=repeatable,suggestedLevel=suggestedLevel,suggestedPlayers=suggestedPlayers}
 end
-function QW:CreateQuest(title, description, steps, rewardID, rewardCount, places, extraItemIDs, followUpQuestID, predecessorQuestID, giverNPCSpec, giverPlaceID, giverDialogue, turnInNPCSpec, existingID)
+function QW:CreateQuest(title, description, steps, rewardID, rewardCount, places, extraItemIDs, followUpQuestID, predecessorQuestID, giverNPCSpec, giverPlaceID, giverDialogue, turnInNPCSpec, existingID, repeatable, suggestedLevel, suggestedPlayers)
   rewardCount=tonumber(rewardCount) or 1
   local checkedSteps=parseSteps(serialiseSteps(steps)); local checkedPlaces, placeByID=parsePlaces(serialisePlaces(places))
   local followUpID=optionalQuestID(followUpQuestID); local predecessorID=optionalQuestID(predecessorQuestID)
   local giverNPCID=optionalNPCID(giverNPCSpec); local turnInNPCID=optionalNPCID(turnInNPCSpec); giverPlaceID=giverPlaceID or ""; giverDialogue=giverDialogue or ""
+  local checkedSuggestedLevel=optionalSuggestedLevel(suggestedLevel)
+  local checkedSuggestedPlayers=optionalSuggestedPlayers(suggestedPlayers)
+  if repeatable~=nil and type(repeatable)~="boolean" then return nil,"Repeatable must be enabled or disabled." end
+  if checkedSuggestedLevel==false then return nil,"Suggested level must be a whole number from 1 to 999." end
+  if checkedSuggestedPlayers==false then return nil,"Suggested player count must be a whole number from 1 to 40." end
   if not self:ValidateString(title,100) or not self:ValidateString(description,500) or not checkedSteps or not checkedPlaces or not self.db.items[rewardID] or rewardCount<1 or rewardCount>999 or followUpID==false or predecessorID==false or giverNPCID==false or turnInNPCID==false or (giverNPCID==nil and (giverPlaceID~="" or giverDialogue~="")) or (giverPlaceID~="" and not self:ValidateString(giverPlaceID,80)) or (giverDialogue~="" and not self:ValidateString(giverDialogue,500)) then return nil,"Quest details are invalid." end
   if giverPlaceID~="" and not placeByID[giverPlaceID] then return nil,"The quest giver place must be defined in Real locations." end
   if followUpID and not self.db.quests[followUpID] then return nil,"The selected follow-up quest does not exist." end
@@ -167,12 +239,13 @@ function QW:CreateQuest(title, description, steps, rewardID, rewardCount, places
   for i=1,self.Count(checkedSteps) do local itemID=checkedSteps[i].itemID; if itemID~="" then self.db.items[itemID].category="quest" end end
   local previous=existingID and self.db.quests[existingID]
   if existingID and (not previous or previous.owner~=self:PlayerName()) then return nil,"Only your own quest can be edited." end
+  if repeatable==nil then repeatable=previous and previous.repeatable or false end
   local id=existingID or self:NewID("quest")
   if previous then
     if previous.predecessorQuestID and self.db.quests[previous.predecessorQuestID] and self.db.quests[previous.predecessorQuestID].followUpQuestID==id then self.db.quests[previous.predecessorQuestID].followUpQuestID=nil end
     if previous.followUpQuestID and self.db.quests[previous.followUpQuestID] and self.db.quests[previous.followUpQuestID].predecessorQuestID==id then self.db.quests[previous.followUpQuestID].predecessorQuestID=nil end
   end
-  self.db.quests[id]={id=id,owner=self:PlayerName(),title=title,description=description,steps=checkedSteps,places=checkedPlaces,itemDefinitions=definitions,rewardID=rewardID,rewardCount=rewardCount,followUpQuestID=followUpID,predecessorQuestID=predecessorID,giverNPCID=giverNPCID,giverPlaceID=giverPlaceID,giverDialogue=giverDialogue,turnInNPCID=turnInNPCID,version=(previous and (previous.version or 1)+1 or 8)}
+  self.db.quests[id]={id=id,owner=self:PlayerName(),title=title,description=description,steps=checkedSteps,places=checkedPlaces,itemDefinitions=definitions,rewardID=rewardID,rewardCount=rewardCount,followUpQuestID=followUpID,predecessorQuestID=predecessorID,giverNPCID=giverNPCID,giverPlaceID=giverPlaceID,giverDialogue=giverDialogue,turnInNPCID=turnInNPCID,repeatable=repeatable,suggestedLevel=checkedSuggestedLevel,suggestedPlayers=checkedSuggestedPlayers,version=(previous and (previous.version or 1)+1 or 9)}
   if predecessorID then self.db.quests[predecessorID].followUpQuestID=id end
   if followUpID then self.db.quests[followUpID].predecessorQuestID=id end
   return id
@@ -182,13 +255,14 @@ function QW:DeleteQuest(id)
   if not quest or quest.owner~=self:PlayerName() then return false,"Only your own quest definition can be deleted." end
   for _,run in pairs(self.db.questRuns or {}) do if run.id==id and run.state~="complete" then return false,"This quest still has an open run. Finish or remove it before deleting the definition." end end
   for _,set in pairs(self.db.sets or {}) do for _,questID in ipairs(set.questIDs or {}) do if questID==id then return false,"Remove this quest from its Questweaver Set first." end end end
+  for _,dialogue in pairs(self.db.npcDialogs or {}) do for _,questID in ipairs(dialogue.questIDs or {}) do if questID==id then return false,"Remove this quest from its NPC conversation first." end end end
   if quest.predecessorQuestID and self.db.quests[quest.predecessorQuestID] and self.db.quests[quest.predecessorQuestID].followUpQuestID==id then self.db.quests[quest.predecessorQuestID].followUpQuestID=nil end
   if quest.followUpQuestID and self.db.quests[quest.followUpQuestID] and self.db.quests[quest.followUpQuestID].predecessorQuestID==id then self.db.quests[quest.followUpQuestID].predecessorQuestID=nil end
   self.db.quests[id]=nil
   if self.RefreshUI then self:RefreshUI() end
   return true,"Quest definition deleted. Completed quest records are retained."
 end
-function QW:ShareQuestWithKind(id,target,firstKind)
+function QW:ShareQuestWithKind(id,target,firstKind,giverOverride)
   local q=self.db.quests[id]
   if not q or not self:ValidateString(target,80) then return false,"Choose a quest and recipient." end
   local chain,seen={},{}
@@ -196,7 +270,7 @@ function QW:ShareQuestWithKind(id,target,firstKind)
   for depth=1,6 do
     if seen[current.id] then return false,"The follow-up quest chain contains a loop." end
     seen[current.id]=true
-    local fields,message=shareFields(current); if not fields then return false,message end
+    local fields,message=shareFields(current,depth==1 and giverOverride or nil); if not fields then return false,message end
     chain[self.Count(chain)+1]={quest=current,fields=fields}
     local nextID=optionalQuestID(current.followUpQuestID)
     if nextID==false then return false,"The follow-up quest ID is invalid." end
@@ -224,11 +298,46 @@ function QW:OfferQuest(id,target)
   if not q or not q.giverNPCID or not q.giverDialogue or q.giverDialogue=="" then return false,"Set a quest giver NPC and dialogue before sending an NPC quest offer." end
   return self:ShareQuestWithKind(id,target,"QUEST_OFFER")
 end
+function QW:SaveNPCDialogue(id,npcSpec,npcName,title,dialogue,questIDs)
+  if id=="" then id=nil end
+  local npcID=optionalNPCID(npcSpec)
+  if not npcID or not self:ValidateString(npcName or "NPC",100) or not self:ValidateString(title,100) or not self:ValidateString(dialogue,500) or type(questIDs)~="table" or self.Count(questIDs)>12 then return nil,"NPC conversation details are invalid." end
+  local previous=id and self.db.npcDialogs[id]
+  if id and (not previous or previous.owner~=self:PlayerName()) then return nil,"Only your own NPC conversation can be edited." end
+  local seen={}
+  for i=1,self.Count(questIDs) do
+    local questID=questIDs[i]; local quest=self.db.quests[questID]
+    if not quest or quest.owner~=self:PlayerName() or seen[questID] then return nil,"Choose only your own quests, with no duplicates." end
+    seen[questID]=true
+  end
+  id=id or self:NewID("npcdialog")
+  self.db.npcDialogs[id]={id=id,owner=self:PlayerName(),npcID=npcID,npcName=npcName,title=title,dialogue=dialogue,questIDs=self:Copy(questIDs),version=(previous and (previous.version or 0)+1 or 1)}
+  return id,"NPC conversation saved."
+end
+function QW:DeleteNPCDialogue(id)
+  local dialogue=self.db.npcDialogs[id]
+  if not dialogue or dialogue.owner~=self:PlayerName() then return false,"Only your own NPC conversation can be deleted." end
+  self.db.npcDialogs[id]=nil
+  return true,"NPC conversation deleted. Its quest definitions were not changed."
+end
+function QW:ShareNPCDialogue(id,target)
+  local dialogue=self.db.npcDialogs[id]
+  if not dialogue or not self:ValidateString(target,80) then return false,"Choose a saved NPC conversation and recipient." end
+  if self.Count(dialogue.questIDs or {})==0 then return false,"Add at least one quest before sharing this conversation." end
+  local sent=0
+  for i=1,self.Count(dialogue.questIDs) do
+    local ok,message=self:ShareQuestWithKind(dialogue.questIDs[i],target,"QUEST_OFFER",{npcID=dialogue.npcID,dialogue=dialogue.dialogue})
+    if not ok then return false,"Shared "..sent.." quest offer(s); stopped because: "..tostring(message) end
+    sent=sent+1
+  end
+  return true,"NPC conversation shared with "..sent.." quest offer(s)."
+end
 function QW:ReceiveQuest(f,sender)
   local run=decodeSharedQuest(f,3,sender); if not run then return end
   local existing=self.db.questRuns[run.id]
   if existing and existing.version>=run.version then return end
-  run.index=1; run.state="active"; run.delivered={}; self.db.questRuns[run.id]=run
+  self:KeepQuestItemDefinitions(run)
+  run.index=1; run.completedObjectives={}; run.pendingApprovals={}; run.state="active"; run.delivered={}; self.db.questRuns[run.id]=run
   self.db.inbox[self.Count(self.db.inbox)+1]="Quest received from "..sender..": "..run.title
 end
 function QW:ReceiveQuestOffer(f,sender)
@@ -237,12 +346,14 @@ function QW:ReceiveQuestOffer(f,sender)
   local existing=self.db.questOffers[offer.id]
   if existing and existing.version>=offer.version then return end
   if self.db.questRuns[offer.id] then return end
+  self:KeepQuestItemDefinitions(offer)
   self.db.questOffers[offer.id]=offer
   self.db.inbox[self.Count(self.db.inbox)+1]="NPC quest offer received from "..sender..": "..offer.title
 end
 function QW:ReceiveFollowUpQuest(f,sender)
   local parentID=f[3]; if not self:ValidateString(parentID or "",120) then return end
   local quest=decodeSharedQuest(f,4,sender); if not quest or quest.id==parentID then return end
+  self:KeepQuestItemDefinitions(quest)
   local parent=self.db.questRuns[parentID] or self.db.questOffers[parentID]
   if parent and (parent.owner~=sender or parent.followUpQuestID~=quest.id) then return end
   local existing=self.db.followUpDefinitions[parentID]
@@ -259,8 +370,10 @@ function QW:AssignQuestToCurrentPlayer(id)
   for i=1,self.Count(places) do placeByID[places[i].id]=places[i] end
   local definitions=self:Copy(q.itemDefinitions or {}); local reward=definitions[q.rewardID] or self:Copy(self.db.items[q.rewardID])
   if not reward then return false,"Quest reward definition was not found." end
+  reward.category="reward"
   definitions[q.rewardID]=reward
-  self.db.questRuns[id]={id=id,owner=q.owner or self:PlayerName(),title=q.title,description=q.description,steps=self:Copy(q.steps),places=places,placeByID=placeByID,itemDefinitions=definitions,reward=reward,rewardCount=q.rewardCount,version=q.version,followUpQuestID=q.followUpQuestID,turnInNPCID=q.turnInNPCID,index=1,state="active",delivered={},assignedLocally=true}
+  for _,step in ipairs(q.steps or {}) do if step.itemID and step.itemID~="" and definitions[step.itemID] then definitions[step.itemID].category="quest" end end
+  self.db.questRuns[id]={id=id,owner=q.owner or self:PlayerName(),title=q.title,description=q.description,steps=self:Copy(q.steps),places=places,placeByID=placeByID,itemDefinitions=definitions,reward=reward,rewardCount=q.rewardCount,version=q.version,followUpQuestID=q.followUpQuestID,turnInNPCID=q.turnInNPCID,repeatable=q.repeatable==true,suggestedLevel=q.suggestedLevel,suggestedPlayers=q.suggestedPlayers,giverNPCID=q.giverNPCID,index=1,completedObjectives={},pendingApprovals={},state="active",delivered={},assignedLocally=true}
   self.db.inbox[self.Count(self.db.inbox)+1]="Demo quest assigned to you: "..q.title
   return true,"Quest assigned to this character."
 end
@@ -278,8 +391,10 @@ function QW:AcceptQuestOffer(id)
   for i=1,self.Count(places) do placeByID[places[i].id]=places[i] end
   local definitions=self:Copy(offer.itemDefinitions or {}); local reward=self:Copy(offer.reward or definitions[offer.rewardID])
   if not reward then return false,"This NPC quest offer has invalid reward data." end
+  reward.category="reward"
   definitions[reward.id]=definitions[reward.id] or reward
-  self.db.questRuns[id]={id=offer.id,owner=offer.owner,title=offer.title,description=offer.description,steps=self:Copy(offer.steps),places=places,placeByID=placeByID,itemDefinitions=definitions,reward=reward,rewardCount=offer.rewardCount,version=offer.version,followUpQuestID=offer.followUpQuestID,turnInNPCID=offer.turnInNPCID,index=1,state="active",delivered={},acceptedFromNPC=offer.giverNPCID}
+  for _,step in ipairs(offer.steps or {}) do if step.itemID and step.itemID~="" and definitions[step.itemID] then definitions[step.itemID].category="quest" end end
+  self.db.questRuns[id]={id=offer.id,owner=offer.owner,title=offer.title,description=offer.description,steps=self:Copy(offer.steps),places=places,placeByID=placeByID,itemDefinitions=definitions,reward=reward,rewardCount=offer.rewardCount,version=offer.version,followUpQuestID=offer.followUpQuestID,turnInNPCID=offer.turnInNPCID,repeatable=offer.repeatable==true,suggestedLevel=offer.suggestedLevel,suggestedPlayers=offer.suggestedPlayers,giverNPCID=offer.giverNPCID,index=1,completedObjectives={},pendingApprovals={},state="active",delivered={},acceptedFromNPC=offer.giverNPCID}
   self.db.questOffers[id]=nil
   self.db.inbox[self.Count(self.db.inbox)+1]="Accepted NPC quest: "..offer.title
   return true,(offer.giverDialogue and offer.giverDialogue~="" and offer.giverDialogue.." " or "").."Quest accepted."
@@ -288,26 +403,47 @@ function QW:GetNPCInteractionOptions(npcID)
   local groups={new={},custom={},ready={},progress={},done={},repeatQuests={}}
   if npcID==2079 then self:CreateBoarDemo() end
   local id,quest,run,offer
+  local function addCustom(option)
+    for _,existing in ipairs(groups.custom) do if existing.text==option.text then return end end
+    groups.custom[self.Count(groups.custom)+1]=option
+  end
+  for id,dialogue in pairs(self.db.npcDialogs or {}) do
+    if dialogue.npcID==npcID then
+      addCustom({kind="npcdialogue",id=id,title=dialogue.title,text=dialogue.dialogue})
+      for _,questID in ipairs(dialogue.questIDs or {}) do
+        quest=self.db.quests[questID]; run=self.db.questRuns[questID]
+        local alreadyListed=false
+        for _,entry in ipairs(groups.new) do if entry.id==questID then alreadyListed=true end end
+        if quest and not run and not alreadyListed then
+          groups.new[self.Count(groups.new)+1]={kind="dialogquest",id=questID,title=quest.title,text=quest.description,dialogue=dialogue.dialogue}
+        end
+      end
+    end
+  end
   for id,offer in pairs(self.db.questOffers) do
     if offer.giverNPCID==npcID and not self.db.questRuns[id] then
       groups.new[self.Count(groups.new)+1]={kind="offer",id=id,title=offer.title,text=offer.description,dialogue=offer.giverDialogue}
-      if offer.giverDialogue and offer.giverDialogue~="" then groups.custom[self.Count(groups.custom)+1]={kind="custom",id=id,title=offer.title,text=offer.giverDialogue} end
+      if offer.giverDialogue and offer.giverDialogue~="" then addCustom({kind="custom",id=id,title=offer.title,text=offer.giverDialogue}) end
     end
   end
   for id,quest in pairs(self.db.quests) do
     if quest.giverNPCID==npcID then
       run=self.db.questRuns[id]
-      if not run then groups.new[self.Count(groups.new)+1]={kind="quest",id=id,title=quest.title,text=quest.description,dialogue=quest.giverDialogue}
+      if not run then
+        local alreadyListed=false
+        for _,entry in ipairs(groups.new) do if entry.id==id then alreadyListed=true end end
+        if not alreadyListed then groups.new[self.Count(groups.new)+1]={kind="quest",id=id,title=quest.title,text=quest.description,dialogue=quest.giverDialogue} end
       elseif run.state=="complete" then
         groups.done[self.Count(groups.done)+1]={kind="done",id=id,title=run.title or quest.title,text="You have already completed this quest."}
       elseif run.state=="active" then
-        local current=run.steps and run.steps[run.index]
-        if not current or current.type~="dialogue" or not current.mobName or current.mobName=="" or not self:TargetMatchesStep(current) then
+        local currentIndices=self:GetCurrentObjectiveIndices(run); local matchingDialogue=false
+        for _,stepIndex in ipairs(currentIndices) do local current=run.steps[stepIndex]; if current.type=="dialogue" and current.mobName and current.mobName~="" and self:TargetMatchesStep(current) then matchingDialogue=true end end
+        if not matchingDialogue then
           groups.progress[self.Count(groups.progress)+1]={kind="active",id=id,title=run.title or quest.title,text="This quest is already in your quest journal."}
         end
       end
       if quest.giverDialogue and quest.giverDialogue~="" then
-        groups.custom[self.Count(groups.custom)+1]={kind="custom",id=id,title=quest.title,text=quest.giverDialogue}
+        addCustom({kind="custom",id=id,title=quest.title,text=quest.giverDialogue})
       end
     end
   end
@@ -320,11 +456,15 @@ function QW:GetNPCInteractionOptions(npcID)
       if not known then
         groups.done[self.Count(groups.done)+1]={kind="done",id=id,title=run.title or id,text="You have already completed this quest."}
       end
-      if run.giverNPCID==npcID or run.acceptedFromNPC==npcID then groups.repeatQuests[self.Count(groups.repeatQuests)+1]={kind="repeat",id=id,title=run.title or id,text="Completed before. Accept this quest again?"} end
+      if run.repeatable==true and (run.giverNPCID==npcID or run.acceptedFromNPC==npcID) then groups.repeatQuests[self.Count(groups.repeatQuests)+1]={kind="repeat",id=id,title=run.title or id,text="Completed before. Accept this quest again?"} end
     end
-    local step=run.steps and run.steps[run.index]
-    if run.state=="active" and step and step.type=="dialogue" and step.mobName and step.mobName~="" and self:TargetMatchesStep(step) then
-      groups.progress[self.Count(groups.progress)+1]={kind="objective",id=id,title=run.title or id,text=step.text or "Speak with this character to continue."}
+    local currentIndices=self:GetCurrentObjectiveIndices(run)
+    if run.state=="active" then for _,stepIndex in ipairs(currentIndices) do
+      local step=run.steps[stepIndex]
+      if step.type=="dialogue" and step.mobName and step.mobName~="" and self:TargetMatchesStep(step) then
+        groups.progress[self.Count(groups.progress)+1]={kind="objective",id=id,stepIndex=stepIndex,title=(run.title or id).." - Step "..tostring(self:ObjectiveStepNumber(step,stepIndex)),text=step.text or "Speak with this character to continue."}
+      end
+    end
     end
   end
   local categories={"new","custom","ready","progress","done","repeatQuests"}; local i
@@ -342,12 +482,21 @@ function QW:PerformNPCInteraction(option,npcID)
     local ok,message=self:AssignQuestToCurrentPlayer(option.id)
     if ok and option.dialogue and option.dialogue~="" then return true,option.dialogue.." Quest accepted." end
     return ok,message
+  elseif option.kind=="dialogquest" then
+    local ok,message=self:AssignQuestToCurrentPlayer(option.id)
+    if ok then
+      local run=self.db.questRuns[option.id]; run.giverNPCID=npcID; run.acceptedFromNPC=npcID
+      if option.dialogue and option.dialogue~="" then return true,option.dialogue.." Quest accepted." end
+    end
+    return ok,message
+  elseif option.kind=="npcdialogue" then
+    return true,option.text
   elseif option.kind=="custom" then return true,option.text
   elseif option.kind=="turnin" then
     local run=self.db.questRuns[option.id]; if not run then return false,"This quest is no longer available." end
     return self:CompleteQuest(run)
   elseif option.kind=="objective" then
-    local ok,message=self:AdvanceQuest(option.id)
+    local ok,message=self:AdvanceQuest(option.id,option.stepIndex)
     if ok then return true,"["..(option.title or option.id).."] "..(message or "Dialogue objective complete.") end
     return false,message
   elseif option.kind=="active" then
@@ -356,7 +505,8 @@ function QW:PerformNPCInteraction(option,npcID)
   elseif option.kind=="repeat" then
     local run=self.db.questRuns[option.id]
     if not run or run.state~="complete" then return false,"This quest is no longer available to repeat." end
-    run.index=1; run.state="active"; run.delivered={}; run.pendingDelivery=nil; run.completedAt=nil
+    if run.repeatable~=true then return false,"This quest cannot be repeated." end
+    run.index=1; run.completedObjectives={}; run.pendingApprovals={}; run.killProgress={}; run.state="active"; run.delivered={}; run.pendingDelivery=nil; run.completedAt=nil
     self.db.inbox[self.Count(self.db.inbox)+1]="Repeated quest: "..(run.title or run.id)
     return true,"Quest accepted again."
   end
@@ -395,9 +545,30 @@ function QW:ClearAcceptedQuests()
   self.db.questRuns={}
   return true,"Removed "..count.." accepted quest record"..(count==1 and "." or "s.")
 end
-function QW:AdvanceQuest(id)
-  local run=self.db.questRuns[id]; if not run or run.state~="active" then return false,"This quest is not active." end
-  local step=run.steps[run.index]; if not step then return false end
+function QW:IsObjectiveComplete(run,index)
+  if run.completedObjectives then return run.completedObjectives[index]==true end
+  return index<(tonumber(run.index) or 1)
+end
+function QW:ObjectiveStepNumber(step,index)
+  return tonumber(step and step.stepNumber) or index
+end
+function QW:GetCurrentObjectiveIndices(run)
+  local indices,number={},nil
+  if not run or not run.steps then return indices end
+  for i=1,self.Count(run.steps) do if not self:IsObjectiveComplete(run,i) then local stepNumber=self:ObjectiveStepNumber(run.steps[i],i); if not number or stepNumber<number then number=stepNumber end end end
+  if not number then return indices end
+  for i=1,self.Count(run.steps) do if not self:IsObjectiveComplete(run,i) and self:ObjectiveStepNumber(run.steps[i],i)==number then indices[self.Count(indices)+1]=i end end
+  return indices,number
+end
+function QW:UpdateRunIndex(run)
+  run.index=self.Count(run.steps or {})+1
+  for i=1,self.Count(run.steps or {}) do if not self:IsObjectiveComplete(run,i) then run.index=i; break end end
+end
+function QW:AdvanceObjective(run,index)
+  local step=run.steps[index]; if not step or self:IsObjectiveComplete(run,index) then return false,"This objective is not active." end
+  local current=self:GetCurrentObjectiveIndices(run); local unlocked=false
+  for _,currentIndex in ipairs(current) do if currentIndex==index then unlocked=true end end
+  if not unlocked then return false,"This objective is locked until earlier steps are complete." end
   -- Dialogue is a target-and-interact objective; proximity is enforced by
   -- selecting the NPC in-game, not by map coordinates or zone text.
   if step.placeID~="" and step.type~="dialogue" then
@@ -407,33 +578,57 @@ function QW:AdvanceQuest(id)
   if (step.type=="dialogue" or step.type=="deliver") and step.mobName~="" then
     local ok,message=self:TargetMatchesStep(step); if not ok then return false,message end
   end
-  if step.type=="dialogue" then return self:FinishStep(run)
-  elseif step.type=="possess" then if not self:HasItem(step.itemID,step.count) then return false,"Required RP item is not in your inventory." end; return self:FinishStep(run)
-  elseif step.type=="visit" then return self:FinishStep(run)
+  if step.type=="dialogue" then return self:FinishStep(run,index)
+  elseif step.type=="possess" then if not self:HasItem(step.itemID,step.count) then return false,"Required RP item is not in your inventory." end; return self:FinishStep(run,index)
+  elseif step.type=="visit" then return self:FinishStep(run,index)
   elseif step.type=="collect" then
     local definition=run.itemDefinitions[step.itemID]
+    if definition then definition.category="quest" end
     if not definition or not self:AddItem(definition,step.count) then return false,"This quest's collection item definition is invalid." end
-    return self:FinishStep(run)
+    return self:FinishStep(run,index)
   elseif step.type=="loot" then
     local targetName=UnitName("target")
     if targetName~=step.mobName then return false,"Target the defined mob ("..step.mobName..") before collecting this RP loot." end
     local definition=run.itemDefinitions[step.itemID]
+    if definition then definition.category="quest" end
     if not definition or not self:AddItem(definition,step.count) then return false,"This quest's loot definition is invalid." end
-    return self:FinishStep(run)
+    return self:FinishStep(run,index)
   elseif step.type=="kill" then return false,"Defeat "..step.mobName.." to update this objective."
   elseif step.type=="manual" then
-    run.state="awaiting approval"; self:Send("QUEST_APPROVAL",run.owner,{run.id,run.index})
+    run.pendingApprovals=run.pendingApprovals or {}; if run.pendingApprovals[index] then return false,"Approval is already pending for this objective." end
+    run.pendingApprovals[index]=true; self:Send("QUEST_APPROVAL",run.owner,{run.id,index})
     self:Print("["..(run.title or run.id).."] Approval requested for: "..step.text)
     return true,"Approval request sent to the quest owner."
   elseif step.type=="deliver" then
+    if run.pendingDelivery then return false,"Another parallel delivery is awaiting acknowledgement." end
     if not self:HasItem(step.itemID,step.count) then return false,"Required RP item is not in your inventory." end
     local deliveryID=self:NewID("delivery"); local def=self.db.items[step.itemID]
     if not self:TakeItem(step.itemID,step.count) then return false end
-    run.pendingDelivery={id=deliveryID,index=run.index,itemID=step.itemID,count=step.count,definition=def}
-    self:Send("QUEST_DELIVERY",run.owner,{deliveryID,run.id,run.index,step.itemID,step.count,self:SerializeItem(def)})
+    run.pendingDelivery={id=deliveryID,index=index,itemID=step.itemID,count=step.count,definition=def}
+    self:Send("QUEST_DELIVERY",run.owner,{deliveryID,run.id,index,step.itemID,step.count,self:SerializeItem(def)})
     self:Print("["..(run.title or run.id).."] Delivery sent for: "..step.text)
     return true,"Delivery sent; it will finish when the owner acknowledges it."
   end
+end
+function QW:AdvanceQuest(id,onlyIndex)
+  local run=self.db.questRuns[id]; if not run or run.state~="active" then return false,"This quest is not active." end
+  local indices=self:GetCurrentObjectiveIndices(run)
+  if onlyIndex then local found=false; for _,index in ipairs(indices) do if index==onlyIndex then found=true end end; if not found then return false,"That objective is not in the active step." end; indices={onlyIndex} end
+  local progressed,firstError=0,nil
+  for _,index in ipairs(indices) do
+    if not self:IsObjectiveComplete(run,index) then
+      local step=run.steps[index]
+      if step.type=="kill" then if not firstError then firstError="Defeat "..step.mobName.." to update this objective." end
+      elseif step.type=="manual" and run.pendingApprovals and run.pendingApprovals[index] then if not firstError then firstError="Approval is already pending for this objective." end
+      elseif step.type=="deliver" and run.pendingDelivery then if not firstError then firstError="Another parallel delivery is awaiting acknowledgement." end
+      else
+        local ok,message=self:AdvanceObjective(run,index)
+        if ok then progressed=progressed+1 elseif not firstError then firstError=message end
+      end
+    end
+  end
+  if progressed>0 then return true,progressed==1 and "Objective progressed." or (progressed.." parallel objectives progressed.") end
+  return false,firstError or "No objective in this step could be progressed."
 end
 function QW:NPCIDFromGUID(guid)
   if type(guid)~="string" then return nil end
@@ -500,17 +695,17 @@ function QW:RecordKill(targetName,targetGUID,targetNPCIDOverride)
   if not self:ValidateString(targetName or "",100) and not targetNPCID then return false end
   local updated=false
   for _,run in pairs(self.db.questRuns) do
-    local step=run.steps and run.steps[run.index]
-    local matches=step and step.type=="kill" and ((step.npcID and step.npcID==targetNPCID) or (not step.npcID and step.mobName==targetName))
-    if run.state=="active" and matches then
-      -- Kill objectives are identity based: a matching NPC template ID counts
-      -- wherever it is killed. Location requirements belong to visit/collect
-      -- objectives and must not suppress combat-log progress.
-      run.killProgress=run.killProgress or {}; local progress=math.min((run.killProgress[run.index] or 0)+1,step.count); run.killProgress[run.index]=progress; updated=true
-      if progress>=step.count then
-        self:FinishStep(run)
-      else
-        self:Print("["..(run.title or run.id).."] Kills: "..progress.." / "..step.count.." - "..step.text)
+    if run.state=="active" then
+      local indices=self:GetCurrentObjectiveIndices(run)
+      for _,index in ipairs(indices) do
+        local step=run.steps[index]
+        local matches=step and step.type=="kill" and ((step.npcID and step.npcID==targetNPCID) or (not step.npcID and step.mobName==targetName))
+        if matches then
+          -- Matching kill objectives in the active parallel group all progress.
+          run.killProgress=run.killProgress or {}; local progress=math.min((run.killProgress[index] or 0)+1,step.count); run.killProgress[index]=progress; updated=true
+          if progress>=step.count then self:FinishStep(run,index)
+          else self:Print("["..(run.title or run.id).."] Kills: "..progress.." / "..step.count.." - "..step.text) end
+        end
       end
     end
   end
@@ -615,24 +810,40 @@ end
 function QW:GetQuestStepProgress(run)
   local total=run and run.steps and self.Count(run.steps) or 0
   if total<1 then return 0,0 end
-  return math.min(math.max(tonumber(run.index) or 1,1),total),total
+  local done=0; for i=1,total do if self:IsObjectiveComplete(run,i) then done=done+1 end end
+  return done,total
 end
-function QW:FinishStep(run)
-  local step=run.steps[run.index]
+function QW:FinishStep(run,index)
+  index=index or run.index
+  local step=run.steps[index]
+  if not step or self:IsObjectiveComplete(run,index) then return false,"This objective is already complete or unavailable." end
+  local currentIndices=self:GetCurrentObjectiveIndices(run); local isCurrent=false
+  for _,currentIndex in ipairs(currentIndices) do if currentIndex==index then isCurrent=true end end
+  if not isCurrent then return false,"This objective is locked until earlier steps are complete." end
   local objective=(step and step.text) or "Objective"
-  run.index=run.index+1
+  run.completedObjectives=run.completedObjectives or {}
+  if not next(run.completedObjectives) then local oldIndex=tonumber(run.index) or 1; for i=1,oldIndex-1 do run.completedObjectives[i]=true end end
+  run.completedObjectives[index]=true
+  self:UpdateRunIndex(run)
   local ok,message
   if run.index>self.Count(run.steps) then
     if run.turnInNPCID then
       run.state="ready_to_turn_in"; ok=true; message="Objectives complete. Return to NPC "..run.turnInNPCID.." and use /qw interact to receive your reward."
     else ok,message=self:CompleteQuest(run) end
-  else ok,message=true,"Objective complete." end
+  else
+    local currentIndices,currentNumber=self:GetCurrentObjectiveIndices(run)
+    local oldNumber=self:ObjectiveStepNumber(step,index)
+    if self.Count(currentIndices)>0 and currentNumber==oldNumber then ok,message=true,"Objective complete. Other objectives in step "..tostring(currentNumber).." remain."
+    elseif self.Count(currentIndices)>0 then ok,message=true,"Objective complete. Step "..tostring(currentNumber).." is now active."
+    else ok,message=true,"Objective complete." end
+  end
   if ok then self:Print("["..(run.title or run.id).."] "..objective.." complete. "..(message or "")) end
   if self.RefreshQuestTracker then self:RefreshQuestTracker() end
   return ok,message
 end
 function QW:CompleteQuest(run)
   if run.state=="complete" then return true end
+  if run.reward then run.reward.category="reward" end
   if not self:AddItem(run.reward,run.rewardCount) then return false,"Reward data was invalid." end
   self.db.questHistory=self.db.questHistory or {}
   self.db.questHistory[#self.db.questHistory+1]={id=run.id,title=run.title,completedAt=self.now(),owner=run.owner}
@@ -658,7 +869,7 @@ function QW:ActivateFollowUp(run)
     return "Follow-up quest could not be activated."
   end
   definitions[reward.id]=definitions[reward.id] or reward
-  self.db.questRuns[followUpID]={id=nextQuest.id,owner=nextQuest.owner,title=nextQuest.title,description=nextQuest.description,steps=self:Copy(nextQuest.steps),places=places,placeByID=placeByID,itemDefinitions=definitions,reward=reward,rewardCount=nextQuest.rewardCount,version=nextQuest.version,followUpQuestID=nextQuest.followUpQuestID,turnInNPCID=nextQuest.turnInNPCID,index=1,state="active",delivered={},activatedFrom=run.id}
+  self.db.questRuns[followUpID]={id=nextQuest.id,owner=nextQuest.owner,title=nextQuest.title,description=nextQuest.description,steps=self:Copy(nextQuest.steps),places=places,placeByID=placeByID,itemDefinitions=definitions,reward=reward,rewardCount=nextQuest.rewardCount,version=nextQuest.version,followUpQuestID=nextQuest.followUpQuestID,turnInNPCID=nextQuest.turnInNPCID,repeatable=nextQuest.repeatable==true,suggestedLevel=nextQuest.suggestedLevel,suggestedPlayers=nextQuest.suggestedPlayers,giverNPCID=nextQuest.giverNPCID,index=1,completedObjectives={},pendingApprovals={},state="active",delivered={},activatedFrom=run.id}
   self.db.followUpDefinitions[run.id]=nil
   self.db.inbox[self.Count(self.db.inbox)+1]="Follow-up quest activated: "..nextQuest.title
   return "Follow-up activated: "..nextQuest.title.."."
@@ -669,7 +880,7 @@ function QW:ReceiveApproval(f,sender)
   local approvalValue=q.id.." | "..index.." | "..sender
   self.db.inbox[self.Count(self.db.inbox)+1]="Approval requested by "..sender.." for "..q.title
   self.db.inbox[self.Count(self.db.inbox)+1]="Approve with: "..approvalValue
-  if self.ui and self.ui.pages and self.ui.pages[2] then self.ui.pages[2].approval:SetText(approvalValue) end
+  if self.ui and self.ui.pages and self.ui.pages[3] then self.ui.pages[3].approval:SetText(approvalValue) end
 end
 function QW:ApproveQuest(id,index,target)
   local q=self.db.quests[id]; index=tonumber(index)
@@ -678,14 +889,18 @@ function QW:ApproveQuest(id,index,target)
 end
 function QW:ReceiveApprovalResult(f,sender)
   local run=self.db.questRuns[f[3]]; local index=tonumber(f[4])
-  if not run or run.owner~=sender or run.state~="awaiting approval" or run.index~=index then return end
-  run.state="active"; self:FinishStep(run)
+  if not run or run.owner~=sender or not index then return end
+  run.pendingApprovals=run.pendingApprovals or {}
+  if run.state=="awaiting approval" and not next(run.pendingApprovals) then run.pendingApprovals[run.index]=true end
+  if not run.pendingApprovals[index] then return end
+  run.pendingApprovals[index]=nil; run.state="active"; self:FinishStep(run,index)
 end
 function QW:ReceiveDelivery(f,sender)
   local deliveryID,questID,index,itemID,count=f[3],f[4],tonumber(f[5]),f[6],tonumber(f[7]); local def=self:ParseItem(f[8])
   local q=self.db.quests[questID]
   if not self:ValidateString(deliveryID,120) or not q or q.owner~=self:PlayerName() or not index or not count or not def or def.id~=itemID or not q.steps[index] then return end
   local step=q.steps[index]; if step.type~="deliver" or step.itemID~=itemID or step.count~=count then return end
+  def.category="quest"
   if not self.db.processed.deliveries[deliveryID] then
     if not self:AddItem(def,count) then return end
     self.db.processed.deliveries[deliveryID]=true
@@ -694,7 +909,7 @@ function QW:ReceiveDelivery(f,sender)
 end
 function QW:ReceiveDeliveryAck(f,sender)
   local run=self.db.questRuns[f[4]]; local index=tonumber(f[5]); if not run or run.owner~=sender or not run.pendingDelivery or run.pendingDelivery.id~=f[3] or run.pendingDelivery.index~=index then return end
-  run.pendingDelivery=nil; self:FinishStep(run)
+  run.pendingDelivery=nil; self:FinishStep(run,index)
 end
 function QW:ResendDelivery(id)
   local run=self.db.questRuns[id]; local d=run and run.pendingDelivery
@@ -714,6 +929,9 @@ function QW:CreateDemo()
   if not letter then letter=self:CreateItem("Sealed Letter","Interface\\Icons\\INV_Letter_15","A wax-sealed letter intended for a trusted courier.",1) end
   local token=self:GetDefaultTokenID()
   if not letter or not token then return nil end
+  -- Seed the teaching scenario through the same allowed Maker-to-satchel path
+  -- before the quest marks this definition as a quest item.
+  if not self:HasItem(letter,1) and self.db.items[letter].category~="quest" and self.db.items[letter].category~="reward" then self:GrantMakerItem(letter,1) end
   local quest=demo.quest
   if not quest or not self.db.quests[quest] then
     local questID,definition

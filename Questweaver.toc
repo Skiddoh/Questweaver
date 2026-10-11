@@ -3,7 +3,7 @@
 ## Title: Questweaver
 ## Notes: Cooperative RP items, trades, and quests for WoW Forever
 ## Author: Questweaver contributors
-## Version: 0.3.37
+## Version: 0.3.44
 ## SavedVariables: QW_DB
 
 Core.lua

@@ -5,21 +5,21 @@ function QW:GetQuestTrackerEntries()
   local id,run
   for id,run in pairs(self.db.questRuns or {}) do
     if run.state=="active" or run.state=="awaiting approval" or run.state=="ready_to_turn_in" then
-      local step=run.steps and run.steps[run.index]
       local objective
       if run.state=="ready_to_turn_in" then objective="Objectives complete - return for your reward"
       elseif run.state=="awaiting approval" then objective="Waiting for quest approval"
-      elseif step then
-        objective=step.text or "Current objective"
-        if step.type=="kill" then
-          local progress=math.min((run.killProgress and run.killProgress[run.index]) or 0,step.count or 0)
-          objective=objective.." ("..progress.."/"..(step.count or 0)..")"
-        elseif step.type=="collect" or step.type=="loot" then
-          objective=objective.." - "..(step.count or 1).." item(s)"
-        elseif step.type=="possess" or step.type=="deliver" then
-          objective=objective.." - "..(step.count or 1).." required"
-        elseif step.type=="visit" then objective=objective.." - visit the location"
-        elseif step.type=="dialogue" then objective=objective.." - speak with the NPC" end
+      elseif run.steps then
+        local current=self:GetCurrentObjectiveIndices(run); local active={}
+        for _,index in ipairs(current) do
+          local step=run.steps[index]; local text="[Step "..self:ObjectiveStepNumber(step,index).."] "..(step.text or "Current objective")
+          if step.type=="kill" then local progress=math.min((run.killProgress and run.killProgress[index]) or 0,step.count or 0); text=text.." ("..progress.."/"..(step.count or 0)..")"
+          elseif step.type=="collect" or step.type=="loot" then text=text.." - "..(step.count or 1).." item(s)"
+          elseif step.type=="possess" or step.type=="deliver" then text=text.." - "..(step.count or 1).." required"
+          elseif step.type=="visit" then text=text.." - visit the location"
+          elseif step.type=="dialogue" then text=text.." - speak with the NPC" end
+          active[self.Count(active)+1]=text
+        end
+        objective=#active>0 and table.concat(active,"; ") or "Quest objectives complete"
       else objective="Quest objectives complete" end
       entries[self.Count(entries)+1]={id=id,title=run.title or id,objective=objective,state=run.state}
     end

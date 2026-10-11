@@ -65,7 +65,8 @@ function QW:AddItem(def, amount)
   local category=type(def)=="table" and self:NormalizeItemCategory(def.category) or nil
   if type(def) ~= "table" or not self:ValidateString(def.id, 120) or not self:ValidateString(def.name, 80) or not self:ValidateIcon(def.icon) or not self:ValidateString(def.description, 500) or not category or not amount or amount < 1 or amount > 999 then return false end
   def.category=category
-  if not self.db.items[def.id] then self.db.items[def.id] = self:Copy(def) end
+  if not self.db.items[def.id] then self.db.items[def.id] = self:Copy(def)
+  elseif category=="quest" or category=="reward" then self.db.items[def.id].category=category end
   self.db.inventory[def.id] = (self.db.inventory[def.id] or 0) + amount
   if self.RefreshQuickAccessButton then self:RefreshQuickAccessButton() end
   return true
@@ -88,8 +89,14 @@ function QW:CanDeleteMakerItem(id)
     if quest.rewardID==id or (quest.itemDefinitions and quest.itemDefinitions[id]) then return false,"This item is referenced by a quest definition." end
     for _,step in ipairs(quest.steps or {}) do if step.itemID==id then return false,"This item is referenced by a quest objective." end end
   end
-  for _,run in pairs(self.db.questRuns or {}) do if run.itemDefinitions and run.itemDefinitions[id] then return false,"This item is retained by an accepted or completed quest." end end
+  for _,run in pairs(self.db.questRuns or {}) do
+    if run.state~="complete" then
+      if run.itemDefinitions and run.itemDefinitions[id] then return false,"This item is retained by an open quest." end
+      for _,step in ipairs(run.steps or {}) do if step.itemID==id then return false,"This item is referenced by an open quest objective." end end
+    end
+  end
   for _,offer in pairs(self.db.questOffers or {}) do if offer.itemDefinitions and offer.itemDefinitions[id] then return false,"This item is referenced by a pending quest offer." end end
+  for _,quest in pairs(self.db.followUpDefinitions or {}) do if quest.itemDefinitions and quest.itemDefinitions[id] then return false,"This item is referenced by a pending follow-up quest." end end
   for _,trade in pairs(self.db.trades or {}) do
     if trade.state~="complete" and trade.state~="cancelled" then
       for _,entry in ipairs(trade.offer or {}) do if entry.id==id then return false,"This item is referenced by an unresolved trade." end end

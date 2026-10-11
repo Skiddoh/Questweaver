@@ -105,13 +105,13 @@ function QW:PrintItemLinkForChat(itemID)
 end
 function QW:CreateUI()
   local f=CreateFrame("Frame","QuestweaverMainFrame",UIParent,"UIPanelDialogTemplate"); self.ui=f; f:SetWidth(620); f:SetHeight(520); f:SetPoint("CENTER"); f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton"); f:SetScript("OnDragStart",f.StartMoving); f:SetScript("OnDragStop",f.StopMovingOrSizing); f:Hide(); f.title=f:CreateFontString(nil,"OVERLAY","GameFontHighlight"); f.title:SetPoint("TOP",0,-10); f.title:SetText("Questweaver v"..QW.RELEASE.." - cooperative RP inventory")
-  local tabs={"Inventory","Maker","Quests","Create","Sets"}; f.pages={}
+  local tabs={"RP Satchel","Maker","Quests","Create","Sets"}; f.pages={}
   for i,name in ipairs(tabs) do
     local p=CreateFrame("Frame",nil,f); p:SetPoint("TOPLEFT",12,-45); p:SetPoint("BOTTOMRIGHT",-12,12); p:Hide(); f.pages[i]=p
     local tabIndex=i
     if name=="Quests" then button(f,name,15+(i-1)*95,-25,90,function() QW:ShowQuestJournal() end) else button(f,name,15+(i-1)*95,-25,90,function() QW:ShowPage(tabIndex) end) end
   end
-  self:BuildInventoryPage(f.pages[1]); self:BuildMakerPage(f.pages[2]); self:BuildQuestPage(f.pages[3]); self:BuildCreatePage(f.pages[4]); self:BuildSetPage(f.pages[5]); self:CreateNPCInteractionWindow(); self:CreateItemPreviewWindow(); self:CreateItemCreator(); self:CreateQuestCreator(); self:CreateSetCreator(); self:CreateReferencePicker(); self:CreateIconPicker(); self:CreateTradeWindow(); self:CreateQuickAccessButton(); self:CreateQuestQuickAccessButton(); self:CreateInteractQuickAccessButton(); self:CreateTokenAccessButton(); self:CreateQuestTracker(); self:ShowPage(1)
+  self:BuildInventoryPage(f.pages[1]); self:BuildMakerPage(f.pages[2]); self:BuildQuestPage(f.pages[3]); self:BuildCreatePage(f.pages[4]); self:BuildSetPage(f.pages[5]); self:CreateNPCInteractionWindow(); self:CreateItemPreviewWindow(); self:CreateItemCreator(); self:CreateQuestCreator(); self:CreateNPCDialogueCreator(); self:CreateSetCreator(); self:CreateReferencePicker(); self:CreateIconPicker(); self:CreateTradeWindow(); self:CreateQuickAccessButton(); self:CreateQuestQuickAccessButton(); self:CreateInteractQuickAccessButton(); self:CreateTokenAccessButton(); self:CreateQuestTracker(); self:ShowPage(1)
 end
 function QW:CreateNPCInteractionWindow()
   local f=CreateFrame("Frame","QuestweaverNPCInteractionFrame",UIParent,"UIPanelDialogTemplate"); self.npcInteraction=f
@@ -182,8 +182,9 @@ function QW:RefreshNPCInteraction()
   if selected then
     f.detailTitle:SetText(selected.title or "Interaction")
     local detail=selected.dialogue and selected.dialogue~="" and selected.dialogue or selected.text or ""
+    if selected.kind=="dialogquest" and selected.text and selected.text~="" then detail=detail.."\n\nQuest: "..selected.text end
     f.detail:SetText(detail)
-    local actionLabels={offer="Accept quest",quest="Accept quest",custom="Listen",turnin="Receive reward",objective="Continue quest",active="Open quest journal",done="Completed",["repeat"]="Accept again"}
+    local actionLabels={offer="Accept quest",quest="Accept quest",dialogquest="Accept quest",custom="Listen",npcdialogue="Listen",turnin="Receive reward",objective="Continue quest",active="Open quest journal",done="Completed",["repeat"]="Accept again"}
     f.action:SetText(actionLabels[selected.kind] or "Choose an interaction")
     if selected.kind=="done" then f.action:Disable() else f.action:Enable() end
   else
@@ -213,7 +214,7 @@ function QW:BuildMakerPage(p)
   p.detailTitle=p:CreateFontString(nil,"OVERLAY","GameFontHighlight"); p.detailTitle:SetPoint("TOPLEFT",275,-35); p.detailTitle:SetWidth(300); p.detailTitle:SetJustifyH("LEFT")
   p.detail=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.detail:SetPoint("TOPLEFT",275,-62); p.detail:SetWidth(300); p.detail:SetHeight(160); p.detail:SetJustifyH("LEFT"); p.detail:SetJustifyV("TOP")
   p.amount=text(p,"Quantity to add",275,-250,80); p.amount:SetText("1")
-  button(p,"Add to RP satchel",365,-250,145,function()
+  p.grant=button(p,"Add to RP satchel",365,-250,145,function()
     if not p.selectedID then QW:Status(p,"Select a Maker Inventory item first."); return end
     local ok,message=QW:GrantMakerItem(p.selectedID,p.amount:GetText()); QW:Status(p,message); QW:RefreshInventoryGrid(QW.ui.pages[1])
   end)
@@ -222,29 +223,35 @@ function QW:BuildMakerPage(p)
     if not p.deleteArmed or p.deleteArmed~=p.selectedID then p.deleteArmed=p.selectedID; p.delete:SetText("Confirm delete"); QW:Status(p,"Click again to delete this definition. Quest/set references, owned satchel stacks, and the default token are protected."); return end
     local id=p.selectedID; local ok,message=QW:DeleteMakerItem(id); p.deleteArmed=nil; p.delete:SetText("Delete definition"); if ok then p.selectedID=nil end; QW:Status(p,message); QW:RefreshMakerInventory()
   end)
-  p.prev=button(p,"<",8,-263,38,function() p.page=math.max(1,(p.page or 1)-1); QW:RefreshMakerInventory() end)
+  p.prev=button(p,"<",8,-263,38,function() p.page=math.max(1,(p.page or 1)-1); p.selectedID=nil; QW:RefreshMakerInventory() end)
   p.pageText=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.pageText:SetPoint("TOPLEFT",52,-268); p.pageText:SetWidth(55); p.pageText:SetJustifyH("CENTER")
-  p.next=button(p,">",111,-263,38,function() p.page=(p.page or 1)+1; QW:RefreshMakerInventory() end)
+  p.next=button(p,">",111,-263,38,function() p.page=(p.page or 1)+1; p.selectedID=nil; QW:RefreshMakerInventory() end)
   p.status=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.status:SetPoint("TOPLEFT",8,-350); p.status:SetWidth(570); p.status:SetJustifyH("LEFT")
 end
 function QW:RefreshMakerInventory()
   if not self.ui or not self.ui.pages[2] then return end
   local p=self.ui.pages[2]; local items={}; for id,item in pairs(self.db.items) do items[self.Count(items)+1]=item end
   table.sort(items,function(a,b) return a.name<b.name end)
-  local pageCount=math.max(1,math.ceil(self.Count(items)/self.Count(p.buttons))); p.page=math.min(math.max(1,p.page or 1),pageCount); p.pageText:SetText(p.page.." / "..pageCount); p.prev:SetEnabled(p.page>1); p.next:SetEnabled(p.page<pageCount)
+  local pageCount=math.max(1,math.ceil(self.Count(items)/self.Count(p.buttons))); p.page=math.min(math.max(1,p.page or 1),pageCount); p.pageText:SetText(p.page.." / "..pageCount); if p.page>1 then p.prev:Enable() else p.prev:Disable() end; if p.page<pageCount then p.next:Enable() else p.next:Disable() end
+  local offset=(p.page-1)*self.Count(p.buttons)
   local selected
   for i=1,self.Count(items) do if items[i].id==p.selectedID then selected=items[i]; break end end
-  if not selected and items[1] then selected=items[1]; p.selectedID=selected.id end
-  local offset=(p.page-1)*self.Count(p.buttons)
+  if not selected and items[offset+1] then selected=items[offset+1]; p.selectedID=selected.id end
   for i=1,self.Count(p.buttons) do
     local b=p.buttons[i]; local item=items[offset+i]
-    if item then b.itemID=item.id; b.icon:SetTexture(item.icon); b:SetText("  "..item.name.."  ["..(item.category or "misc").."]"); b:Show()
+    if item then local category=item.category or "misc"; if category=="quest" then category="quest item" end; b.itemID=item.id; b.icon:SetTexture(item.icon); b:SetText("  "..item.name.."  ["..category.."]"); b:Show()
     else b.itemID=nil; b.icon:SetTexture(nil); b:Hide() end
   end
   if selected then
-    p.detailTitle:SetText(selected.name); p.detail:SetText("Category: "..(selected.category or "misc").."\nMax stack: "..(selected.maxStack or 1).."\nDefinition ID: "..selected.id.."\n\n"..(selected.description or ""))
-    p.delete:Enable(); p.delete:SetText(p.deleteArmed==selected.id and "Confirm delete" or "Delete definition")
-  else p.selectedID=nil; p.detailTitle:SetText("No maker items"); p.detail:SetText("Create an item definition from the Create tab. Definitions do not automatically enter your satchel."); p.delete:Disable() end
+    local category=selected.category or "misc"; local label=category=="quest" and "quest item" or category
+    local detail="Category: "..label.."\nMax stack: "..(selected.maxStack or 1).."\nDefinition ID: "..selected.id.."\n\n"..(selected.description or "")
+    if category=="quest" or category=="reward" then detail=detail.."\n\nQuest items and rewards enter the Satchel only through quests." end
+    p.detailTitle:SetText(selected.name); p.detail:SetText(detail)
+    local allowed=category~="quest" and category~="reward" and not selected.default
+    if allowed then p.grant:Enable() else p.grant:Disable() end
+    local canDelete,reason=QW:CanDeleteMakerItem(selected.id); if canDelete then p.delete:Enable() else p.delete:Disable(); p.detail:SetText(detail.."\n\nDelete unavailable: "..reason) end
+    p.delete:SetText(p.deleteArmed==selected.id and "Confirm delete" or "Delete definition")
+  else p.selectedID=nil; p.detailTitle:SetText("No maker items"); p.detail:SetText("Create an item definition from the Create tab. Definitions do not automatically enter your satchel."); p.delete:Disable(); p.grant:Disable() end
 end
 function QW:BuildInventoryPage(p)
   p.list=p:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); p.list:SetPoint("TOPLEFT",8,-8); p.list:SetJustifyH("LEFT"); p.list:SetWidth(580); p.list:SetText("RP SATCHEL - click an item, then open the trade window to offer it")
@@ -534,14 +541,18 @@ function QW:OpenQuestForSharing(id)
   if not q or not self.questCreator then return false end
   local f=self.questCreator; local stepLines={}; local placeLines={}; local extra={}; local used={[q.rewardID]=true}
   for _,step in ipairs(q.steps or {}) do
-    stepLines[self.Count(stepLines)+1]=table.concat({self:Escape(step.type or ""),self:Escape(step.itemID or ""),self:Escape(step.count or ""),self:Escape(step.placeID or ""),self:Escape(step.mobName or ""),self:Escape(step.text or "")},"~")
+    stepLines[self.Count(stepLines)+1]=table.concat({self:Escape(step.type or ""),self:Escape(step.itemID or ""),self:Escape(step.count or ""),self:Escape(step.placeID or ""),self:Escape(step.mobName or ""),self:Escape(step.text or ""),self:Escape(step.stepNumber or self:Count(stepLines)+1)},"~")
     if step.itemID and step.itemID~="" then used[step.itemID]=true end
   end
   for _,place in ipairs(q.places or {}) do placeLines[self.Count(placeLines)+1]=table.concat({self:Escape(place.id),self:Escape(place.zone),self:Escape(place.x or ""),self:Escape(place.y or ""),self:Escape(place.radius or ""),self:Escape(place.description or "")},"~") end
   for itemID in pairs(q.itemDefinitions or {}) do if not used[itemID] then extra[self.Count(extra)+1]=itemID end end
   table.sort(extra)
-  f.qtitle:SetText(q.title or ""); f.qdesc:SetText(q.description or ""); f.reward:SetText(q.rewardID or ""); f.rewardCountValue=q.rewardCount or 1; f.giverPlaceIDValue=q.giverPlaceID or ""; f.steps:SetText(table.concat(stepLines,";")); f.places:SetText(table.concat(placeLines,";")); f.questItems:SetText(table.concat(extra,","))
+  f.qtitle:SetText(q.title or ""); f.qdesc:SetText(q.description or ""); f.reward:SetText(q.rewardID or ""); f.rewardCountValue=q.rewardCount or 1; f.giverPlaceIDValue=q.giverPlaceID or ""; f.objectiveSteps=self:Copy(q.steps or {}); f.selectedObjective=nil; f:Show(); f.steps:SetText(table.concat(stepLines,";")); f.places:SetText(table.concat(placeLines,";")); f.questItems:SetText(table.concat(extra,",")); self:SyncObjectiveEditor()
+  f.suggestedLevel:SetText(q.suggestedLevel and tostring(q.suggestedLevel) or "")
+  f.suggestedPlayers:SetText(q.suggestedPlayers and tostring(q.suggestedPlayers) or "")
   f.followUp:SetText(q.followUpQuestID or ""); f.predecessor:SetText(q.predecessorQuestID or ""); f.giverTarget:SetText(q.giverNPCID and ("npc:"..q.giverNPCID) or ""); f.giverDialogue:SetText(q.giverDialogue or ""); f.turnInTarget:SetText(q.turnInNPCID and ("npc:"..q.turnInNPCID) or ""); f.qid:SetText(q.id); f.qtarget:SetText(""); f.editingID=q.id; f.createButton:SetText("Save changes")
+  f.repeatable=q.repeatable==true; f.repeatableButton:SetText("Repeatable: "..(f.repeatable and "Yes" or "No"))
+  f.generalSection:Show(); f.objectiveSection:Hide(); f.generalTab:SetText("[ General ]"); f.objectiveTab:SetText("Objectives")
   f:Show(); f:Raise(); f.qtitle:SetFocus()
   return true
 end
@@ -601,7 +612,7 @@ function QW:RefreshQuestJournal()
   elseif selected.kind=="quest" then
     local q=selected.data; local reward=self.db.items[q.rewardID]; local rewardText=reward and ("Reward: "..reward.name.." x"..q.rewardCount) or "Reward data unavailable"
     p.selectedQuestID=q.id; p.deleteQuest:Show(); p.deleteQuest:SetText(p.deleteArmed==q.id and "Confirm delete" or "Delete quest")
-    local lines={q.description,"","Status: YOUR QUEST - this is a definition you created.","Enter a recipient below, then use Share quest.","Steps: "..self.Count(q.steps),rewardText,"Quest ID: "..q.id}
+    local lines={q.description,"","Status: YOUR QUEST - this is a definition you created.","Suggested level: "..(q.suggestedLevel and tostring(q.suggestedLevel) or "Any"),"Suggested player count: "..(q.suggestedPlayers and tostring(q.suggestedPlayers) or "Any"),"Repeatable: "..(q.repeatable and "Yes" or "No"),"Enter a recipient below, then use Share quest.","Steps: "..self.Count(q.steps),rewardText,"Quest ID: "..q.id}
     if q.predecessorQuestID then lines[self.Count(lines)+1]="Predecessor: "..q.predecessorQuestID end
     if q.followUpQuestID then lines[self.Count(lines)+1]="Follow-up: "..q.followUpQuestID end
     if q.turnInNPCID then lines[self.Count(lines)+1]="Reward turn-in NPC ID: "..q.turnInNPCID end
@@ -613,7 +624,7 @@ function QW:RefreshQuestJournal()
       QW:Status(p,message or (ok and "Quest shared with "..p.shareTarget:GetText().."."))
     end)
   elseif selected.kind=="offer" then
-    local o=selected.data; local lines={o.description,"","Status: NPC QUEST OFFER"}
+    local o=selected.data; local lines={o.description,"","Status: NPC QUEST OFFER","Suggested level: "..(o.suggestedLevel and tostring(o.suggestedLevel) or "Any"),"Suggested player count: "..(o.suggestedPlayers and tostring(o.suggestedPlayers) or "Any"),"Repeatable: "..(o.repeatable and "Yes" or "No")}
     if o.giverDialogue and o.giverDialogue~="" then lines[self.Count(lines)+1]="Dialogue: \""..o.giverDialogue.."\"" end
     if o.giverNPCID then lines[self.Count(lines)+1]="Quest giver NPC ID: "..o.giverNPCID end
     if o.turnInNPCID then lines[self.Count(lines)+1]="Reward turn-in NPC ID: "..o.turnInNPCID end
@@ -623,28 +634,25 @@ function QW:RefreshQuestJournal()
       local ok,message=QW:AcceptQuestOffer(o.id); QW:Status(p,message or (ok and "Quest accepted.")); QW:RefreshQuestJournal()
     end)
   else
-    local r=selected.data; local step=r.steps[r.index]; local objectiveIndex,objectiveTotal=self:GetQuestStepProgress(r); local lines={r.description,"","Status: "..r.state,"Progress: "..objectiveIndex.." / "..objectiveTotal}
-    if step then
-      lines[self.Count(lines)+1]="Objective: "..step.text
+    local r=selected.data; local current=self:GetCurrentObjectiveIndices(r); local objectiveIndex,objectiveTotal=self:GetQuestStepProgress(r); local lines={r.description,"","Status: "..r.state,"Suggested level: "..(r.suggestedLevel and tostring(r.suggestedLevel) or "Any"),"Suggested player count: "..(r.suggestedPlayers and tostring(r.suggestedPlayers) or "Any"),"Repeatable: "..(r.repeatable and "Yes" or "No"),"Objectives complete: "..objectiveIndex.." / "..objectiveTotal}
+    for _,stepIndex in ipairs(current) do
+      local step=r.steps[stepIndex]; lines[self.Count(lines)+1]="[Step "..self:ObjectiveStepNumber(step,stepIndex).."] "..step.text
       local place=r.placeByID and r.placeByID[step.placeID]
       if place then local location="Location: "..place.zone; if place.x then location=location.." - "..place.x..", "..place.y.." (radius "..place.radius..")" end; lines[self.Count(lines)+1]=location end
       if step.npcID then lines[self.Count(lines)+1]="Target NPC ID: "..step.npcID elseif step.mobName and step.mobName~="" then lines[self.Count(lines)+1]="Target: "..step.mobName end
-      if step.type=="kill" then lines[self.Count(lines)+1]="Kills: "..math.min((r.killProgress and r.killProgress[r.index]) or 0,step.count).." / "..step.count end
+      if step.type=="kill" then lines[self.Count(lines)+1]="Kills: "..math.min((r.killProgress and r.killProgress[stepIndex]) or 0,step.count).." / "..step.count end
       if step.itemID and step.itemID~="" then lines[self.Count(lines)+1]="RP item: "..step.itemID.." x"..(step.count or 1) end
-    else lines[self.Count(lines)+1]="All objectives complete." end
+    end
+    if #current==0 then lines[self.Count(lines)+1]="All objectives complete." end
     if r.pendingDelivery then lines[self.Count(lines)+1]="Delivery acknowledgement pending - use Resend delivery if needed." end
     if r.turnInNPCID then lines[self.Count(lines)+1]="Reward turn-in NPC ID: "..r.turnInNPCID end
     if r.reward then lines[self.Count(lines)+1]="Reward: "..r.reward.name.." x"..r.rewardCount end
     if r.followUpQuestID then lines[self.Count(lines)+1]="Follow-up on completion: "..r.followUpQuestID end
     p.detailTitle:SetText(r.title); p.detail:SetText(table.concat(lines,"\n"))
     if r.state=="active" then
-      if step and step.type=="collect" then p.primary:SetText("Collect item here")
-      elseif step and step.type=="dialogue" and step.mobName and step.mobName~="" then p.primary:SetText("Talk / interact with NPC")
-      else p.primary:SetText("Progress objective") end
+      p.primary:SetText("Progress active objectives")
       p.primary:SetScript("OnClick",function()
-        local ok,message
-        if step and step.type=="dialogue" and step.mobName and step.mobName~="" then ok,message=QW:InteractWithTarget()
-        else ok,message=QW:AdvanceQuest(r.id) end
+        local ok,message=QW:AdvanceQuest(r.id)
         QW:Status(p,message or (ok and "Objective advanced.")); QW:RefreshQuestJournal()
       end)
     elseif r.state=="ready_to_turn_in" then
@@ -670,7 +678,7 @@ function QW:BuildSetPage(p)
   p.heading=p:CreateFontString(nil,"OVERLAY","GameFontHighlight"); p.heading:SetPoint("TOPLEFT",8,-8); p.heading:SetText("Questweaver Sets - authored RP questlines and stories")
   p.setButtons={}; local i
   for i=1,8 do
-    local entry=button(p,"",8,-32-(i-1)*34,245,function(self) p.selectedSetID=self.setID; QW:RefreshSetPage() end)
+    local entry=button(p,"",8,-32-(i-1)*34,245,function(self) p.selectedSetID=self.setID; p.deleteArmed=nil; QW:RefreshSetPage() end)
     entry.setID=nil; entry:Hide(); p.setButtons[QW.Count(p.setButtons)+1]=entry
   end
   p.empty=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.empty:SetPoint("TOPLEFT",8,-35); p.empty:SetWidth(245); p.empty:SetJustifyH("LEFT")
@@ -710,10 +718,11 @@ function QW:RefreshSetPage()
   end
 end
 function QW:BuildCreatePage(p)
-  p.help=p:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); p.help:SetPoint("TOPLEFT",20,-35); p.help:SetWidth(520); p.help:SetJustifyH("LEFT"); p.help:SetText("Create items and quests in focused windows. Item creation includes a visual icon picker; quest creation has its own workspace.")
+  p.help=p:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); p.help:SetPoint("TOPLEFT",20,-35); p.help:SetWidth(520); p.help:SetJustifyH("LEFT"); p.help:SetText("Create items, quests, NPC conversations, and Questweaver story sets in focused editors.")
   button(p,"Create RP item",25,-90,210,function() QW.itemCreator:Show(); QW.itemCreator:Raise() end)
   button(p,"Create quest",250,-90,210,function() QW:OpenNewQuestCreator() end)
   button(p,"Create Questweaver Set",25,-180,210,function() QW.setCreator:Show(); QW.setCreator:Raise() end)
+  button(p,"NPC conversations",250,-180,210,function() QW:OpenNewNPCDialogue() end)
   button(p,"Create sealed-letter demo",25,-135,210,function()
     local letter,quest=QW:CreateDemo()
     if quest then local ok,message=QW:AssignQuestToCurrentPlayer(quest); QW:Status(p,message or (ok and "Demo quest assigned.")); QW:ShowActiveQuests() else QW:Status(p,"Could not create the demo.") end
@@ -743,21 +752,35 @@ function QW:CreateItemCreator()
   button(f,"Browse icons",380,-111,90,function() QW:ShowIconPicker(f) end)
   f.desc=text(f,"Description",25,-185,440); f.stack=text(f,"Max stack size",25,-230,80); f.stack:SetText("1"); f.category="misc"
   f.categoryButton=button(f,"Category: misc",135,-230,130,function()
-    f.categoryIndex=(f.categoryIndex or 3)%QW.Count(QW.ITEM_CATEGORIES)+1; f.category=QW.ITEM_CATEGORIES[f.categoryIndex]; f.categoryButton:SetText("Category: "..f.category)
+    f.categoryIndex=(f.categoryIndex or 3)%QW.Count(QW.ITEM_CATEGORIES)+1; f.category=QW.ITEM_CATEGORIES[f.categoryIndex]; f.categoryButton:SetText("Category: "..(f.category=="quest" and "quest item" or f.category))
   end); f.categoryIndex=3
   f.categoryHelp=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.categoryHelp:SetPoint("TOPLEFT",275,-230); f.categoryHelp:SetWidth(195); f.categoryHelp:SetText("Quest/reward items enter via quests only.")
   button(f,"Create item",25,-280,120,function()
     local id,message=QW:CreateItem(f.name:GetText(),QW:NormalizeIcon(f.iconPath:GetText()),f.desc:GetText(),f.stack:GetText(),f.category)
-    QW:Status(f,message or ("Created: "..id)); if id then QW:RefreshUI() end
+    QW:Status(f,message or ("Created Maker definition: "..id)); if id then QW:RefreshUI() end
   end)
   f.status=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.status:SetPoint("TOPLEFT",155,-283); f.status:SetWidth(310); f.status:SetJustifyH("LEFT")
 end
 function QW:CreateQuestCreator()
   local f=self:NewCreatorWindow("QuestweaverQuestCreatorFrame","Create and share quest",620,770); self.questCreator=f
-  f.qtitle=text(f,"Quest title",18,-62,205); f.qdesc=text(f,"Quest description",235,-62,300); f.reward=text(f,"Reward item ID (default token is item:questweaver:rp-token)",18,-108,205)
-  f.steps=text(f,"Objective sequence (generated; advanced editing only)",235,-108,360)
-  f.places=text(f,"Real locations: placeId~zone~x~y~radius~description ; ...",18,-154,570)
-  f.questItems=text(f,"Additional quest item IDs (comma separated)",18,-200,570)
+  local general=CreateFrame("Frame",nil,f); general:SetPoint("TOPLEFT",f,"TOPLEFT",18,-62); general:SetWidth(584); general:SetHeight(560); f.generalSection=general
+  local objectives=CreateFrame("Frame",nil,f); objectives:SetPoint("TOPLEFT",f,"TOPLEFT",18,-62); objectives:SetWidth(584); objectives:SetHeight(560); f.objectiveSection=objectives
+  general.heading=general:CreateFontString(nil,"OVERLAY","GameFontNormal"); general.heading:SetPoint("TOPLEFT",4,-10); general.heading:SetText("GENERAL QUEST DETAILS")
+  objectives.heading=objectives:CreateFontString(nil,"OVERLAY","GameFontNormal"); objectives.heading:SetPoint("TOPLEFT",4,-10); objectives.heading:SetText("OBJECTIVES — complete in this order")
+  f.generalTab=button(f,"General",18,-36,125,function() general:Show(); objectives:Hide(); f.generalTab:SetText("[ General ]"); f.objectiveTab:SetText("Objectives") end)
+  f.objectiveTab=button(f,"Objectives",151,-36,125,function() general:Hide(); objectives:Show(); f.generalTab:SetText("General"); f.objectiveTab:SetText("[ Objectives ]") end)
+  f.qtitle=text(general,"Quest title",18,-55,205); f.qdesc=text(general,"Quest description",235,-55,330); f.reward=text(general,"Reward item ID (default token is item:questweaver:rp-token)",18,-100,260)
+  f.places=text(general,"Real locations: placeId~zone~x~y~radius~description ; ...",18,-145,545)
+  f.questItems=text(general,"Additional quest item IDs (comma separated)",18,-190,220)
+  f.suggestedLevel=text(general,"Suggested level (optional, 1-999)",250,-190,150)
+  f.suggestedPlayers=text(general,"Suggested player count (optional, 1-40)",415,-190,150)
+  f.followUp=text(general,"Follow-up quest ID (optional)",18,-235,260)
+  f.predecessor=text(general,"Predecessor quest ID (optional)",300,-235,265)
+  f.giverTarget=text(general,"Quest giver NPC ID (optional)",18,-280,185)
+  f.giverDialogue=text(general,"Quest giver dialogue (for NPC offer)",18,-325,545)
+  f.turnInTarget=text(general,"Reward turn-in NPC ID (optional)",18,-370,200)
+  f.qid=text(general,"Quest ID",18,-415,240); f.qtarget=text(general,"Recipient (for sharing)",300,-415,265)
+  f.steps=text(objectives,nil,18,-285,545); f.steps:Hide()
   local function browseOnRightClick(field,kind,mode)
     field:SetScript("OnMouseDown",function(_,mouseButton)
       mouseButton=mouseButton or arg1
@@ -765,88 +788,122 @@ function QW:CreateQuestCreator()
     end)
   end
   browseOnRightClick(f.reward,"item","replace"); browseOnRightClick(f.questItems,"item","append")
-  local objectiveTypes={"kill","collect","dialogue","deliver","possess","visit"}; f.objectiveTypeIndex=1
-  f.objectiveType=button(f,"Type: kill",18,-249,110,function()
-    f.objectiveTypeIndex=f.objectiveTypeIndex%QW.Count(objectiveTypes)+1
-    local kind=objectiveTypes[f.objectiveTypeIndex]; f.objectiveType:SetText("Type: "..kind)
-    f.objectiveItem:SetText(""); f.objectivePlace:SetText(""); f.targetSpec:SetText("")
-    f.objectiveCount:SetText((kind=="kill" or kind=="collect" or kind=="deliver" or kind=="possess") and "1" or "")
-    if kind=="kill" then f.objectiveText:SetText("Defeat the targeted NPC.")
-    elseif kind=="collect" then f.objectiveText:SetText("Collect the item at this location.")
-    elseif kind=="dialogue" then f.objectiveText:SetText("Speak to the targeted NPC at this location.")
-    elseif kind=="deliver" then f.objectiveText:SetText("Deliver the item to the quest owner.")
-    elseif kind=="possess" then f.objectiveText:SetText("Carry the required RP item.")
-    else f.objectiveText:SetText("Visit this location.") end
-  end)
-  f.objectiveText=text(f,"Objective text",140,-246,450); f.objectiveText:SetText("Defeat the targeted NPC.")
-  f.objectiveItem=text(f,"RP item ID (collect / deliver / possess)",18,-292,235)
+  local objectiveTypes={"kill","collect","loot","dialogue","deliver","possess","visit","manual"}; f.objectiveTypeIndex=1
+  local objectiveLabels={kill="Kill NPC",collect="Collect item at place",loot="Loot item from mob",dialogue="Talk to NPC",deliver="Deliver item",possess="Have item",visit="Visit place",manual="Manual approval"}
+  f.objectiveSteps={}; f.selectedObjective=nil
+  local objectiveScroll=CreateFrame("ScrollFrame","QuestweaverObjectiveScroll",objectives,"UIPanelScrollFrameTemplate")
+  objectiveScroll:SetPoint("TOPLEFT",18,-48); objectiveScroll:SetWidth(535); objectiveScroll:SetHeight(205)
+  local objectiveContent=CreateFrame("Frame",nil,objectiveScroll); objectiveContent:SetWidth(510); objectiveContent:SetHeight(1); objectiveScroll:SetScrollChild(objectiveContent); f.objectiveContent=objectiveContent; f.objectiveRows={}
+  local function refreshObjectiveList()
+    for i=1,QW.Count(f.objectiveRows) do f.objectiveRows[i]:Hide(); f.objectiveRows[i].remove:Hide() end
+    local count=QW.Count(f.objectiveSteps); objectiveContent:SetHeight(math.max(1,count*34))
+    if count==0 then
+      if not f.objectiveEmpty then f.objectiveEmpty=objectiveContent:CreateFontString(nil,"OVERLAY","GameFontDisableSmall"); f.objectiveEmpty:SetPoint("TOPLEFT",8,-8); f.objectiveEmpty:SetText("No objectives yet. Click Add objective to choose a type.") end
+      f.objectiveEmpty:Show()
+    else
+      if f.objectiveEmpty then f.objectiveEmpty:Hide() end
+      for i=1,count do
+        local row=f.objectiveRows[i]
+        if not row then
+          row=CreateFrame("Button",nil,objectiveContent,"UIPanelButtonTemplate"); row:SetWidth(440); row:SetHeight(28)
+          row.remove=button(objectiveContent,"X",0,0,28,function(self) local at=self.objectiveIndex; if at then table.remove(f.objectiveSteps,at); f.selectedObjective=nil; refreshObjectiveList(); QW:SyncObjectiveEditor() end end)
+          row:SetScript("OnClick",function(self) f.selectedObjective=self.objectiveIndex; QW:SyncObjectiveEditor() end); f.objectiveRows[i]=row
+        end
+        local objective=f.objectiveSteps[i]; local stepNumber=tonumber(objective.stepNumber) or i
+        row.objectiveIndex=i; row:ClearAllPoints(); row:SetPoint("TOPLEFT",objectiveContent,"TOPLEFT",0,-((i-1)*34)); row:SetText("Step "..stepNumber.." | "..(objectiveLabels[objective.type] or objective.type).." - "..(objective.text or "")); row:Show()
+        row.remove.objectiveIndex=i; row.remove:ClearAllPoints(); row.remove:SetPoint("LEFT",row,"RIGHT",4,0); row.remove:Show()
+      end
+    end
+    local encoded={}; for i=1,count do local step=f.objectiveSteps[i]; encoded[i]=table.concat({QW:Escape(step.type or ""),QW:Escape(step.itemID or ""),QW:Escape(step.count or ""),QW:Escape(step.placeID or ""),QW:Escape(step.mobName or ""),QW:Escape(step.text or ""),QW:Escape(step.stepNumber or i)},"~") end
+    f.steps:SetText(table.concat(encoded,";"))
+  end
+  QW.RefreshObjectiveList=refreshObjectiveList
+  f.objectiveGroup=text(objectives,"Step number (same number = parallel)",18,-320,95); f.objectiveGroup:SetText("1")
+  f.objectiveText=text(objectives,"Objective text",125,-320,438); f.objectiveText:SetText("")
+  f.objectiveItem=text(objectives,"RP item ID",18,-365,235)
   browseOnRightClick(f.objectiveItem,"item","replace")
-  f.objectiveCount=text(f,"Count",265,-292,60); f.objectiveCount:SetText("1")
-  f.objectivePlace=text(f,"Place ID (required for collect / visit)",340,-292,250)
-  f.targetSpec=text(f,"Target NPC ID (required for kill; optional dialogue / deliver)",18,-338,230)
-  button(f,"Use targeted NPC",260,-341,145,function()
+  f.objectiveCount=text(objectives,"Count",265,-365,60); f.objectiveCount:SetText("1")
+  f.objectivePlace=text(objectives,"Place ID",340,-365,225)
+  f.targetSpec=text(objectives,"Target NPC ID (kill / dialogue / deliver)",18,-410,230)
+  button(objectives,"Use targeted NPC",260,-413,145,function()
     local npcID,npcName=QW:GetTargetNPCInfo()
     if not npcID then QW:Status(f,npcName); return end
-    f.targetSpec:SetText("npc:"..npcID); QW:Status(f,"Selected NPC "..npcID.." ("..npcName..").")
+    if objectiveTypes[f.objectiveTypeIndex]=="loot" then f.targetSpec:SetText(npcName) else f.targetSpec:SetText("npc:"..npcID) end
+    QW:Status(f,"Selected NPC "..npcID.." ("..npcName..").")
   end)
-  local function updateObjectiveSummary()
-    local steps=QW:ParseSteps(f.steps:GetText()); if not steps then f.objectiveSummary:SetText("Objectives: add them with the fields above, in the order they should happen."); return end
-    local lines={"Objectives ("..QW.Count(steps).."):"}; local i; for i=1,math.min(3,QW.Count(steps)) do lines[QW.Count(lines)+1]=i..". "..steps[i].type.." - "..steps[i].text end
-    if QW.Count(steps)>3 then lines[QW.Count(lines)+1]="... plus "..(QW.Count(steps)-3).." more" end; f.objectiveSummary:SetText(table.concat(lines,"\n"))
+  function QW:SyncObjectiveEditor()
+    local step=f.selectedObjective and f.objectiveSteps[f.selectedObjective]
+    if step then
+      f.objectiveTypeIndex=1; for i=1,QW.Count(objectiveTypes) do if objectiveTypes[i]==step.type then f.objectiveTypeIndex=i end end
+      f.objectiveText:SetText(step.text or ""); f.objectiveGroup:SetText(tostring(step.stepNumber or f.selectedObjective)); f.objectiveItem:SetText(step.itemID or ""); f.objectiveCount:SetText(step.count and tostring(step.count) or ""); f.objectivePlace:SetText(step.placeID or ""); f.targetSpec:SetText(step.mobName or "")
+      f.applyObjectiveButton:SetText("Update objective")
+    else
+      local nextGroup=1; for i=1,QW.Count(f.objectiveSteps) do nextGroup=math.max(nextGroup,tonumber(f.objectiveSteps[i].stepNumber) or i) end; nextGroup=QW.Count(f.objectiveSteps)>0 and nextGroup+1 or 1
+      f.objectiveText:SetText(""); f.objectiveGroup:SetText(tostring(nextGroup)); f.objectiveItem:SetText(""); f.objectiveCount:SetText("1"); f.objectivePlace:SetText(""); f.targetSpec:SetText(""); f.applyObjectiveButton:SetText("Add to objective list")
+    end
+    f.objectiveTypeLabel:SetText("Type: "..(objectiveLabels[objectiveTypes[f.objectiveTypeIndex]] or "Choose a type")); refreshObjectiveList()
   end
-  button(f,"Add objective",420,-341,170,function()
-    local kind=objectiveTypes[f.objectiveTypeIndex]; local objective=f.objectiveText:GetText(); local itemID=f.objectiveItem:GetText(); local count=tonumber(f.objectiveCount:GetText()); local placeID=f.objectivePlace:GetText(); local target=f.targetSpec:GetText()
+  local function applyObjective()
+    local kind=objectiveTypes[f.objectiveTypeIndex]; local objective=f.objectiveText:GetText(); local itemID=f.objectiveItem:GetText(); local count=tonumber(f.objectiveCount:GetText()); local placeID=f.objectivePlace:GetText(); local target=f.targetSpec:GetText(); local stepNumber=tonumber(f.objectiveGroup:GetText())
     local function clean(value,allowEmpty) return (allowEmpty and value=="") or (QW:ValidateString(value,300) and not string.find(value,"[;~]")) end
     if not clean(objective,false) or not clean(itemID,true) or not clean(placeID,true) or not clean(target,true) then QW:Status(f,"Objective fields cannot be blank where required or contain ; or ~."); return end
-    local existing=f.steps:GetText(); local existingSteps=existing~="" and QW:ParseSteps(existing) or {}
-    if not existingSteps then QW:Status(f,"Fix the objective sequence before adding another objective."); return end
-    if QW.Count(existingSteps)>=12 then QW:Status(f,"A quest can have at most 12 objectives."); return end
-    if (kind=="kill" or kind=="collect" or kind=="deliver" or kind=="possess") and (not count or count<1 or count>999) then QW:Status(f,"This objective needs a count from 1-999."); return end
-    if (kind=="collect" or kind=="deliver" or kind=="possess") and not QW:ValidateString(itemID,120) then QW:Status(f,"This objective needs an RP item ID."); return end
+    if not stepNumber or stepNumber<1 or stepNumber>99 or stepNumber~=math.floor(stepNumber) then QW:Status(f,"Step number must be a whole number from 1 to 99."); return end
+    if not f.selectedObjective and QW.Count(f.objectiveSteps)>=12 then QW:Status(f,"A quest can have at most 12 objectives."); return end
+    if (kind=="kill" or kind=="collect" or kind=="loot" or kind=="deliver" or kind=="possess") and (not count or count<1 or count>999) then QW:Status(f,"This objective needs a count from 1-999."); return end
+    if (kind=="collect" or kind=="loot" or kind=="deliver" or kind=="possess") and not QW:ValidateString(itemID,120) then QW:Status(f,"This objective needs an RP item ID."); return end
     if (kind=="collect" or kind=="visit") and not QW:ValidateString(placeID,80) then QW:Status(f,"This objective needs a defined place ID."); return end
     if kind=="kill" and not string.match(target,"^npc:%d+$") then QW:Status(f,"Target an NPC, then use Use targeted NPC before adding a kill objective."); return end
-    if target~="" and not string.match(target,"^npc:%d+$") then QW:Status(f,"Use Targeted NPC to set an NPC ID, or leave the target field empty."); return end
-    if kind=="kill" or kind=="dialogue" or kind=="visit" then itemID="" end
-    if kind=="dialogue" or kind=="visit" then count="" end
-    if kind~="kill" and kind~="dialogue" and kind~="deliver" then target="" end
-    local step=kind.."~"..itemID.."~"..(count or "").."~"..placeID.."~"..target.."~"..objective
-    f.steps:SetText(existing~="" and (existing..";"..step) or step); updateObjectiveSummary(); QW:Status(f,"Added "..kind.." objective.")
-  end)
-  f.objectiveSummary=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.objectiveSummary:SetPoint("TOPLEFT",18,-375); f.objectiveSummary:SetWidth(570); f.objectiveSummary:SetJustifyH("LEFT"); updateObjectiveSummary(); f.steps:SetScript("OnTextChanged",updateObjectiveSummary)
-  button(f,"Remove last",18,-414,105,function()
-    local steps=f.steps:GetText(); local cut=string.match(steps,"^(.*);[^;]*$")
-    if cut then f.steps:SetText(cut) elseif steps~="" then f.steps:SetText("") else QW:Status(f,"There are no objectives to remove."); return end
-    QW:Status(f,"Removed the last objective.")
-  end)
-  button(f,"Clear objectives",132,-414,125,function() f.steps:SetText(""); QW:Status(f,"Cleared the objective sequence.") end)
-  f.followUp=text(f,"Follow-up quest ID (optional)",270,-414,320)
-  f.predecessor=text(f,"Predecessor quest ID (optional; links it automatically)",18,-457,265)
+    if kind=="loot" and target=="" then QW:Status(f,"This loot objective needs the exact mob name in the target field."); return end
+    if target~="" and kind~="loot" and not string.match(target,"^npc:%d+$") then QW:Status(f,"Use Targeted NPC to set an NPC ID, or leave the target field empty."); return end
+    if kind=="kill" or kind=="dialogue" or kind=="visit" or kind=="manual" then itemID="" end
+    if kind=="dialogue" or kind=="visit" or kind=="manual" then count=nil end
+    if kind~="kill" and kind~="dialogue" and kind~="deliver" and kind~="loot" then target="" end
+    local step={type=kind,itemID=itemID,count=count,placeID=placeID,mobName=target,text=objective,stepNumber=stepNumber}
+    if f.selectedObjective then f.objectiveSteps[f.selectedObjective]=step else f.objectiveSteps[QW.Count(f.objectiveSteps)+1]=step end
+    f.selectedObjective=nil; refreshObjectiveList(); QW:SyncObjectiveEditor(); QW:Status(f,"Objective saved to the list.")
+  end
+  f.objectiveTypeLabel=objectives:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.objectiveTypeLabel:SetPoint("TOPLEFT",290,-275); f.objectiveTypeLabel:SetText("Type: choose one")
+  f.applyObjectiveButton=button(objectives,"Add to objective list",420,-275,145,applyObjective)
+  local typePicker=CreateFrame("Frame","QuestweaverObjectiveTypePicker",objectives,"BackdropTemplate"); typePicker:SetPoint("TOPLEFT",18,-275); typePicker:SetWidth(220); typePicker:SetHeight(220); typePicker:SetFrameStrata("DIALOG"); typePicker:SetBackdrop({bgFile="Interface\\DialogFrame\\UI-DialogBox-Background",edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",edgeSize=12,insets={left=3,right=3,top=3,bottom=3}}); typePicker:Hide(); f.objectiveTypePicker=typePicker
+  for i=1,QW.Count(objectiveTypes) do
+    local kind=objectiveTypes[i]; local selectedIndex=i; button(typePicker,objectiveLabels[kind],8,-8-((i-1)*24),195,function()
+      f.objectiveTypeIndex=selectedIndex; f.selectedObjective=nil; f.objectiveTypePicker:Hide()
+      local defaults={kill="Defeat the targeted NPC.",collect="Collect the item at this location.",loot="Loot the item from this mob.",dialogue="Speak to the targeted NPC.",deliver="Deliver the RP item.",possess="Carry the required RP item.",visit="Visit this location.",manual="Request manual approval."}
+      local nextGroup=1; for i=1,QW.Count(f.objectiveSteps) do nextGroup=math.max(nextGroup,tonumber(f.objectiveSteps[i].stepNumber) or i) end; nextGroup=QW.Count(f.objectiveSteps)>0 and nextGroup+1 or 1
+      f.objectiveText:SetText(defaults[kind]); f.objectiveGroup:SetText(tostring(nextGroup)); f.objectiveItem:SetText(""); f.objectiveCount:SetText((kind=="kill" or kind=="collect" or kind=="loot" or kind=="deliver" or kind=="possess") and "1" or ""); f.objectivePlace:SetText(""); f.targetSpec:SetText("")
+      f.objectiveTypeLabel:SetText("Type: "..objectiveLabels[kind]); f.applyObjectiveButton:SetText("Add to objective list")
+    end)
+  end
+  button(objectives,"Add objective",18,-275,130,function() f.objectiveTypePicker:Show(); f.objectiveTypePicker:Raise() end)
+  button(objectives,"New objective",154,-275,120,function() f.selectedObjective=nil; QW:SyncObjectiveEditor() end)
+  refreshObjectiveList()
   browseOnRightClick(f.followUp,"quest","replace"); browseOnRightClick(f.predecessor,"quest","replace")
-  f.giverTarget=text(f,"Quest giver NPC ID (optional)",300,-457,180)
-  button(f,"Use NPC",490,-460,100,function()
+  button(general,"Use NPC",215,-283,100,function()
     local npcID,npcName=QW:GetTargetNPCInfo()
     if not npcID then QW:Status(f,npcName); return end
     f.giverTarget:SetText("npc:"..npcID); QW:Status(f,"Quest giver set to "..npcName.." (NPC "..npcID..").")
   end)
-  f.qid=text(f,"Quest ID",18,-503,240); f.qtarget=text(f,"Recipient",270,-503,180)
-  f.giverDialogue=text(f,"Quest giver dialogue (required for NPC offer)",18,-549,570)
-  f.turnInTarget=text(f,"Reward turn-in NPC ID (optional)",18,-595,220)
-  button(f,"Use giver",245,-598,100,function()
+  button(general,"Use giver",230,-373,95,function()
     local giver=f.giverTarget:GetText()
     if not string.match(giver or "","^npc:%d+$") then QW:Status(f,"Set a quest giver NPC first, or enter the turn-in NPC ID."); return end
     f.turnInTarget:SetText(giver); QW:Status(f,"Reward will be granted by the quest giver.")
   end)
-  button(f,"Use target",355,-598,100,function()
+  button(general,"Use target",335,-373,95,function()
     local npcID,npcName=QW:GetTargetNPCInfo()
     if not npcID then QW:Status(f,npcName); return end
     f.turnInTarget:SetText("npc:"..npcID); QW:Status(f,"Reward will be granted by "..npcName.." (NPC "..npcID..").")
   end)
+  f.repeatable=false
+  f.repeatableButton=button(general,"Repeatable: No",440,-373,125,function()
+    f.repeatable=not f.repeatable; f.repeatableButton:SetText("Repeatable: "..(f.repeatable and "Yes" or "No"))
+  end)
   f.createButton=button(f,"Create quest",18,-595,120,function()
     local steps=QW:ParseSteps(f.steps:GetText()); local places=QW:ParsePlaces(f.places:GetText()); local ids=QW:ParseItemIDs(f.questItems:GetText())
     local wasEditing=f.editingID~=nil
-    local id,message=QW:CreateQuest(f.qtitle:GetText(),f.qdesc:GetText(),steps or {},f.reward:GetText(),f.rewardCountValue or 1,places or {},ids or {},f.followUp:GetText(),f.predecessor:GetText(),f.giverTarget:GetText(),f.giverPlaceIDValue or "",f.giverDialogue:GetText(),f.turnInTarget:GetText(),f.editingID)
+    local id,message=QW:CreateQuest(f.qtitle:GetText(),f.qdesc:GetText(),steps or {},f.reward:GetText(),f.rewardCountValue or 1,places or {},ids or {},f.followUp:GetText(),f.predecessor:GetText(),f.giverTarget:GetText(),f.giverPlaceIDValue or "",f.giverDialogue:GetText(),f.turnInTarget:GetText(),f.editingID,f.repeatable==true,f.suggestedLevel:GetText(),f.suggestedPlayers:GetText())
     if id then f.qid:SetText(id); if wasEditing then f.createButton:SetText("Save changes") end end; QW:Status(f,message or ((wasEditing and "Updated quest: " or "Created quest: ")..id)); QW:RefreshUI()
   end)
+  general:Show(); objectives:Hide(); f.generalTab:SetText("[ General ]")
   f.createButton:ClearAllPoints(); f.createButton:SetPoint("TOPLEFT",f,"TOPLEFT",18,-641)
   button(f,"Share active",150,-641,105,function() local ok,message=QW:ShareQuest(f.qid:GetText(),f.qtarget:GetText()); QW:Status(f,message or (ok and "Quest shared.")) end)
   button(f,"Send NPC offer",265,-641,130,function() local ok,message=QW:OfferQuest(f.qid:GetText(),f.qtarget:GetText()); QW:Status(f,message or (ok and "NPC quest offer sent.")) end)
@@ -855,8 +912,80 @@ function QW:CreateQuestCreator()
 end
 function QW:OpenNewQuestCreator()
   local f=self.questCreator; if not f then return end
-  f.editingID=nil; f.rewardCountValue=1; f.giverPlaceIDValue=""; f.qtitle:SetText(""); f.qdesc:SetText(""); f.reward:SetText(self.DEFAULT_TOKEN_ID); f.steps:SetText(""); f.places:SetText(""); f.questItems:SetText(""); f.followUp:SetText(""); f.predecessor:SetText(""); f.giverTarget:SetText(""); f.giverDialogue:SetText(""); f.turnInTarget:SetText(""); f.qid:SetText(""); f.qtarget:SetText(""); f.createButton:SetText("Create quest")
+  f.editingID=nil; f.rewardCountValue=1; f.giverPlaceIDValue=""; f.repeatable=false; f.repeatableButton:SetText("Repeatable: No"); f.qtitle:SetText(""); f.qdesc:SetText(""); f.reward:SetText(self.DEFAULT_TOKEN_ID); f.objectiveSteps={}; f.selectedObjective=nil; f.steps:SetText(""); self:SyncObjectiveEditor(); f.places:SetText(""); f.questItems:SetText(""); f.suggestedLevel:SetText(""); f.suggestedPlayers:SetText(""); f.followUp:SetText(""); f.predecessor:SetText(""); f.giverTarget:SetText(""); f.giverDialogue:SetText(""); f.turnInTarget:SetText(""); f.qid:SetText(""); f.qtarget:SetText(""); f.createButton:SetText("Create quest")
+  f.generalSection:Show(); f.objectiveSection:Hide(); f.generalTab:SetText("[ General ]"); f.objectiveTab:SetText("Objectives")
   f:Show(); f:Raise(); f.qtitle:SetFocus()
+end
+function QW:CreateNPCDialogueCreator()
+  local f=self:NewCreatorWindow("QuestweaverNPCDialogueCreatorFrame","Create NPC conversation",620,545); self.npcDialogueCreator=f
+  f.dialogueID=text(f,"Conversation ID (blank creates a new one)",18,-62,285)
+  f.npcID=text(f,"NPC ID",18,-108,155)
+  button(f,"Use targeted NPC",185,-111,140,function()
+    local npcID,npcName=QW:GetTargetNPCInfo()
+    if not npcID then QW:Status(f,npcName); return end
+    f.npcID:SetText("npc:"..npcID); f.npcName:SetText(npcName)
+  end)
+  f.npcName=text(f,"NPC name",18,-153,285)
+  f.dialogueTitle=text(f,"Conversation title",18,-198,285)
+  f.dialogueText=text(f,"NPC dialogue / greeting",18,-243,285)
+  f.questIDs=text(f,"Quest IDs this NPC can offer",18,-288,285)
+  button(f,"Choose quests",18,-313,140,function() QW:ShowReferencePicker("quest",f.questIDs,"append") end)
+  f.shareTarget=text(f,"Share offers with player",18,-354,285)
+  button(f,"Save conversation",18,-393,140,function()
+    local quests=QW:ParseSetQuestIDs(f.questIDs:GetText())
+    if not quests then QW:Status(f,"Choose up to 12 unique quest definitions."); return end
+    local id,message=QW:SaveNPCDialogue(f.dialogueID:GetText(),f.npcID:GetText(),f.npcName:GetText(),f.dialogueTitle:GetText(),f.dialogueText:GetText(),quests)
+    if id then f.dialogueID:SetText(id); f.deleteArmed=nil; QW:RefreshNPCDialogueList() end
+    QW:Status(f,message or "Could not save conversation.")
+  end)
+  button(f,"Save + share",168,-393,140,function()
+    local quests=QW:ParseSetQuestIDs(f.questIDs:GetText())
+    if not quests then QW:Status(f,"Choose up to 12 unique quest definitions."); return end
+    local id,message=QW:SaveNPCDialogue(f.dialogueID:GetText(),f.npcID:GetText(),f.npcName:GetText(),f.dialogueTitle:GetText(),f.dialogueText:GetText(),quests)
+    if not id then QW:Status(f,message); return end
+    f.dialogueID:SetText(id); f.deleteArmed=nil; QW:RefreshNPCDialogueList()
+    local ok,shareMessage=QW:ShareNPCDialogue(id,f.shareTarget:GetText())
+    QW:Status(f,shareMessage or message or (ok and "Conversation shared."))
+  end)
+  f.deleteButton=button(f,"Delete",18,-424,90,function()
+    local id=f.dialogueID:GetText()
+    if not id or id=="" then QW:Status(f,"Choose a saved conversation first."); return end
+    if f.deleteArmed~=id then f.deleteArmed=id; f.deleteButton:SetText("Confirm delete"); QW:Status(f,"Click Delete again to remove this conversation."); return end
+    local ok,message=QW:DeleteNPCDialogue(id); f.deleteArmed=nil; f.deleteButton:SetText("Delete"); QW:Status(f,message)
+    if ok then QW:OpenNewNPCDialogue() end
+    QW:RefreshNPCDialogueList()
+  end)
+  f.status=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.status:SetPoint("TOPLEFT",18,-460); f.status:SetWidth(285); f.status:SetJustifyH("LEFT")
+  f.savedHeading=f:CreateFontString(nil,"OVERLAY","GameFontNormal"); f.savedHeading:SetPoint("TOPLEFT",340,-58); f.savedHeading:SetText("SAVED CONVERSATIONS")
+  f.savedButtons={}
+  for i=1,12 do
+    local entry=button(f,"",340,-82-(i-1)*25,245,function(self) QW:OpenNPCDialogueEditor(self.dialogueID) end)
+    entry.dialogueID=nil; entry:Hide(); f.savedButtons[i]=entry
+  end
+end
+function QW:RefreshNPCDialogueList()
+  local f=self.npcDialogueCreator; if not f then return end
+  local entries={}; for _,dialogue in pairs(self.db.npcDialogs or {}) do entries[self.Count(entries)+1]=dialogue end
+  table.sort(entries,function(a,b) if a.npcName==b.npcName then return a.title<b.title end return a.npcName<b.npcName end)
+  for i=1,self.Count(f.savedButtons) do
+    local buttonRow=f.savedButtons[i]; local dialogue=entries[i]
+    if dialogue then buttonRow.dialogueID=dialogue.id; buttonRow:SetText(string.sub(dialogue.npcName..": "..dialogue.title,1,36)); buttonRow:Show()
+    else buttonRow.dialogueID=nil; buttonRow:Hide() end
+  end
+end
+function QW:OpenNPCDialogueEditor(id)
+  local f=self.npcDialogueCreator; local dialogue=id and self.db.npcDialogs[id]
+  if not f then return false end
+  if not dialogue then return self:OpenNewNPCDialogue() end
+  f.dialogueID:SetText(dialogue.id); f.npcID:SetText("npc:"..dialogue.npcID); f.npcName:SetText(dialogue.npcName); f.dialogueTitle:SetText(dialogue.title); f.dialogueText:SetText(dialogue.dialogue); f.questIDs:SetText(table.concat(dialogue.questIDs or {},",")); f.deleteArmed=nil; f.deleteButton:SetText("Delete")
+  f:Show(); f:Raise(); return true
+end
+function QW:OpenNewNPCDialogue()
+  local f=self.npcDialogueCreator; if not f then return false end
+  f.dialogueID:SetText(""); f.npcID:SetText(""); f.npcName:SetText(""); f.dialogueTitle:SetText(""); f.dialogueText:SetText(""); f.questIDs:SetText(""); f.shareTarget:SetText(""); f.deleteArmed=nil; f.deleteButton:SetText("Delete")
+  local npcID,npcName=self:GetTargetNPCInfo()
+  if npcID then f.npcID:SetText("npc:"..npcID); f.npcName:SetText(npcName) end
+  self:RefreshNPCDialogueList(); f:Show(); f:Raise(); f.dialogueTitle:SetFocus(); return true
 end
 function QW:CreateSetCreator()
   local f=self:NewCreatorWindow("QuestweaverSetCreatorFrame","Create Questweaver Set",600,475); self.setCreator=f

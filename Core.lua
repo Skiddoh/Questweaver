@@ -1,8 +1,8 @@
 -- Questweaver: deliberately small, data-only cooperative RP addon.
 QW = QW or {}
-QW.RELEASE = "0.3.37"
-QW.VERSION = 3
-QW.PROTOCOL = 2
+QW.RELEASE = "0.3.44"
+QW.VERSION = 6
+QW.PROTOCOL = 7
 QW.PREFIX = "QW1"
 QW.CHANNEL = "WHISPER"
 QW.now = function() return time() end
@@ -44,6 +44,7 @@ function QW:InitDB()
   self.db.questRuns = self.db.questRuns or {}
   self.db.questHistory = self.db.questHistory or {}
   self.db.npcNames = self.db.npcNames or {}
+  self.db.npcDialogs = self.db.npcDialogs or {}
   self.db.questOffers = self.db.questOffers or {}
   self.db.followUpDefinitions = self.db.followUpDefinitions or {}
   self.db.processed = self.db.processed or { transfers = {}, deliveries = {} }
@@ -52,6 +53,7 @@ function QW:InitDB()
   self.db.inbox = self.db.inbox or {}
   self.outbox, self.incomingChunks = {}, {}
   if self.EnsureDefaultItems then self:EnsureDefaultItems() end
+  self.db.version=self.VERSION
 end
 
 function QW:ValidateString(value, max)
@@ -87,6 +89,7 @@ function QW:OnLoad()
     elseif command=="active" or command=="activequests" then QW:ShowActiveQuests()
     elseif command=="quest" or command=="quests" then QW:ShowQuestJournal()
     elseif command=="sets" or command=="set" then QW:ShowSets()
+    elseif command=="conversation" or command=="conversations" then QW:OpenNewNPCDialogue()
     elseif command=="interact" then local ok,message=QW:InteractWithTarget(); QW:Print(message or (ok and "Quest interaction complete.")); if QW.RefreshUI then QW:RefreshUI() end
     elseif command=="npcid" then local ok,message=QW:DescribeTargetNPC(); QW:Print(message or (ok and "NPC ID found."))
     elseif command=="killdebug" or command=="killdebug on" then
