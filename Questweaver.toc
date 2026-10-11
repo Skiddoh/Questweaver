@@ -1,0 +1,16 @@
+## Interface: 16000, 16001
+## X-GameType: camelot
+## Title: Questweaver
+## Notes: Cooperative RP items, trades, and quests for WoW Forever
+## Author: Questweaver contributors
+## Version: 0.3.37
+## SavedVariables: QW_DB
+
+Core.lua
+Protocol.lua
+Inventory.lua
+Trade.lua
+Quest.lua
+Tracker.lua
+Sets.lua
+UI.lua

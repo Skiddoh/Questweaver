@@ -1,0 +1,1048 @@
+local function splitUI(value)
+  local out={}; for part in string.gmatch(value or "","[^|]+") do out[QW.Count(out)+1]=part end; return out
+end
+local function text(parent,label,x,y,w,h)
+  local e=CreateFrame("EditBox",nil,parent,"InputBoxTemplate"); e:SetPoint("TOPLEFT",x,y); e:SetWidth(w); e:SetHeight(h or 20); e:SetAutoFocus(false)
+  if label then local l=parent:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); l:SetPoint("BOTTOMLEFT",e,"TOPLEFT",0,2); l:SetText(label); e.label=l end
+  return e
+end
+local function button(parent,label,x,y,w,fn)
+  local b=CreateFrame("Button",nil,parent,"UIPanelButtonTemplate"); b:SetPoint("TOPLEFT",x,y); b:SetWidth(w); b:SetHeight(22); b:SetText(label); b:SetScript("OnClick",fn); return b
+end
+local function escapePattern(value)
+  return string.gsub(value,"([%^%$%(%)%%%.%[%]%*%+%-%?])","%%%1")
+end
+local FALLBACK_ICONS={
+  "Interface\\Icons\\INV_Misc_Coin_01","Interface\\Icons\\INV_Misc_Coin_02","Interface\\Icons\\INV_Misc_Coin_03","Interface\\Icons\\INV_Misc_Coin_04","Interface\\Icons\\INV_Misc_Coin_05","Interface\\Icons\\INV_Misc_Coin_06",
+  "Interface\\Icons\\INV_Misc_Book_01","Interface\\Icons\\INV_Misc_Book_02","Interface\\Icons\\INV_Misc_Book_03","Interface\\Icons\\INV_Misc_Book_04","Interface\\Icons\\INV_Misc_Book_05","Interface\\Icons\\INV_Misc_Book_06","Interface\\Icons\\INV_Misc_Book_07","Interface\\Icons\\INV_Misc_Book_08","Interface\\Icons\\INV_Misc_Book_09","Interface\\Icons\\INV_Misc_Book_10","Interface\\Icons\\INV_Misc_Book_11","Interface\\Icons\\INV_Misc_Book_12",
+  "Interface\\Icons\\INV_Letter_01","Interface\\Icons\\INV_Letter_02","Interface\\Icons\\INV_Letter_03","Interface\\Icons\\INV_Letter_04","Interface\\Icons\\INV_Letter_05","Interface\\Icons\\INV_Letter_06","Interface\\Icons\\INV_Letter_07","Interface\\Icons\\INV_Letter_08","Interface\\Icons\\INV_Letter_15",
+  "Interface\\Icons\\INV_Misc_Note_01","Interface\\Icons\\INV_Misc_Note_02","Interface\\Icons\\INV_Misc_Note_03","Interface\\Icons\\INV_Misc_Note_05","Interface\\Icons\\INV_Misc_Key_01","Interface\\Icons\\INV_Misc_Key_02","Interface\\Icons\\INV_Misc_Key_03","Interface\\Icons\\INV_Misc_Bag_08","Interface\\Icons\\INV_Misc_Map_01","Interface\\Icons\\INV_Misc_Map_02","Interface\\Icons\\INV_Misc_Gem_Amethyst_01","Interface\\Icons\\INV_Misc_Gem_Pearl_01","Interface\\Icons\\INV_Misc_Food_15","Interface\\Icons\\INV_Misc_Organ_02","Interface\\Icons\\INV_Chest_Chain","Interface\\Icons\\INV_Weapon_ShortBlade_01"
+}
+function QW:GetIconLibrary()
+  local icons,seen={},{}
+  local function add(icon)
+    if not QW:ValidateIcon(icon) or seen[tostring(icon)] then return end
+    seen[tostring(icon)]=true; icons[QW.Count(icons)+1]=icon
+  end
+  local i; for i=1,QW.Count(FALLBACK_ICONS) do add(FALLBACK_ICONS[i]) end
+  local function addMacroIcons(api)
+    if not api then return end
+    local ok,result=pcall(api)
+    if ok and type(result)=="table" then for _,icon in pairs(result) do add(icon) end end
+  end
+  addMacroIcons(GetMacroIcons); addMacroIcons(GetMacroItemIcons)
+  table.sort(icons,function(a,b) return tostring(a)<tostring(b) end)
+  return icons
+end
+function QW:FilterItemLinkMessage(_,event,message,...)
+  if type(message)~="string" then return false end
+  local trailing=arg or {}; local trailingCount=trailing.n or self.Count(trailing)
+  local replaced=string.gsub(message,"|Hquestweaver:item:([^|]+)|h.-|h",function(data)
+    local item=self:ParseChatItemLink("questweaver:item:"..data)
+    if not item then return "[RP item]" end
+    local name=string.gsub(item.name,"|","||")
+    return "|Hquestweaver:item:"..data.."|h|T"..tostring(item.icon)..":16:16|t "..name.."|h"
+  end)
+  -- Never send addon-only hyperlink escapes over player chat. Outgoing chat
+  -- contains the plain [Item Name] marker; each addon client turns it into a
+  -- local clickable preview only if it knows that RP item definition.
+  for id,item in pairs(self.db.items) do
+    local safeName=string.gsub(item.name,"|","||"); local label="["..safeName.."]"
+    local pattern=escapePattern(label)
+    local texture="|Hquestweaver:item:"..self:SerializeItem(item).."|h|T"..tostring(item.icon)..":16:16|t "..safeName.."|h"
+    replaced=string.gsub(replaced,pattern,function() return texture end)
+  end
+  if replaced==message then return false end
+  return false,replaced,unpack(trailing,1,trailingCount)
+end
+function QW:CreateItemPreviewWindow()
+  local f=CreateFrame("Frame","QuestweaverItemPreviewFrame",UIParent,"UIPanelDialogTemplate"); self.itemPreview=f
+  f:SetWidth(430); f:SetHeight(270); f:SetPoint("CENTER"); f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton"); f:SetScript("OnDragStart",f.StartMoving); f:SetScript("OnDragStop",f.StopMovingOrSizing); f:Hide()
+  f.title=f:CreateFontString(nil,"OVERLAY","GameFontHighlightLarge"); f.title:SetPoint("TOP",0,-12)
+  f.icon=f:CreateTexture(nil,"ARTWORK"); f.icon:SetPoint("TOPLEFT",26,-58); f.icon:SetWidth(64); f.icon:SetHeight(64)
+  f.description=f:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); f.description:SetPoint("TOPLEFT",108,-62); f.description:SetWidth(295); f.description:SetHeight(135); f.description:SetJustifyH("LEFT"); f.description:SetJustifyV("TOP")
+  f.id=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.id:SetPoint("BOTTOMLEFT",24,42); f.id:SetWidth(380); f.id:SetJustifyH("LEFT")
+  button(f,"Close",165,-235,100,function() f:Hide() end)
+  local original=SetItemRef
+  if original and not self.itemLinkHooked then
+    self.originalSetItemRef=original
+    SetItemRef=function(link,textValue,mouseButton,chatFrame)
+      local item=QW:ParseChatItemLink(link)
+      if item then QW:ShowItemPreview(item); return end
+      return QW.originalSetItemRef(link,textValue,mouseButton,chatFrame)
+    end
+    self.itemLinkHooked=true
+  end
+  if ChatFrame_AddMessageEventFilter and not self.itemLinkFiltersRegistered then
+    local events={"CHAT_MSG_SAY","CHAT_MSG_YELL","CHAT_MSG_PARTY","CHAT_MSG_PARTY_LEADER","CHAT_MSG_RAID","CHAT_MSG_RAID_LEADER","CHAT_MSG_GUILD","CHAT_MSG_OFFICER","CHAT_MSG_WHISPER","CHAT_MSG_WHISPER_INFORM","CHAT_MSG_CHANNEL"}
+    local i; for i=1,self.Count(events) do pcall(ChatFrame_AddMessageEventFilter,events[i],function(...) return QW:FilterItemLinkMessage(...) end) end
+    self.itemLinkFiltersRegistered=true
+  end
+end
+function QW:ShowItemPreview(itemOrID)
+  local item=type(itemOrID)=="table" and itemOrID or self.db.items[itemOrID]
+  if type(item)~="table" then self:Print("This item definition is not available on your client."); return false end
+  local f=self.itemPreview; if not f then return false end
+  f.title:SetText(item.name); f.icon:SetTexture(item.icon); f.description:SetText(item.description); f.id:SetText(item.id); f:Show(); return true
+end
+function QW:InsertItemLinkIntoChat(itemID)
+  local item=self.db.items[itemID]
+  if not item then self:Print("Unknown RP item ID."); return false end
+  local plainName="["..string.gsub(item.name,"|","||").."]"
+  local activeChat=ChatEdit_GetActiveWindow and ChatEdit_GetActiveWindow()
+  if ChatEdit_InsertText and (activeChat or not ChatEdit_GetActiveWindow) then
+    local ok=pcall(ChatEdit_InsertText,plainName)
+    if ok then return true end
+  end
+  return self:PrintItemLinkForChat(itemID)
+end
+function QW:PrintItemLinkForChat(itemID)
+  local item=self.db.items[itemID]
+  if not item then self:Print("Unknown RP item ID."); return false end
+  DEFAULT_CHAT_FRAME:AddMessage("["..string.gsub(item.name,"|","||").."]")
+  self:Print("Only the item name was printed. Right-click its Inventory icon while chat is open to insert it safely.")
+  return true
+end
+function QW:CreateUI()
+  local f=CreateFrame("Frame","QuestweaverMainFrame",UIParent,"UIPanelDialogTemplate"); self.ui=f; f:SetWidth(620); f:SetHeight(520); f:SetPoint("CENTER"); f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton"); f:SetScript("OnDragStart",f.StartMoving); f:SetScript("OnDragStop",f.StopMovingOrSizing); f:Hide(); f.title=f:CreateFontString(nil,"OVERLAY","GameFontHighlight"); f.title:SetPoint("TOP",0,-10); f.title:SetText("Questweaver v"..QW.RELEASE.." - cooperative RP inventory")
+  local tabs={"Inventory","Maker","Quests","Create","Sets"}; f.pages={}
+  for i,name in ipairs(tabs) do
+    local p=CreateFrame("Frame",nil,f); p:SetPoint("TOPLEFT",12,-45); p:SetPoint("BOTTOMRIGHT",-12,12); p:Hide(); f.pages[i]=p
+    local tabIndex=i
+    if name=="Quests" then button(f,name,15+(i-1)*95,-25,90,function() QW:ShowQuestJournal() end) else button(f,name,15+(i-1)*95,-25,90,function() QW:ShowPage(tabIndex) end) end
+  end
+  self:BuildInventoryPage(f.pages[1]); self:BuildMakerPage(f.pages[2]); self:BuildQuestPage(f.pages[3]); self:BuildCreatePage(f.pages[4]); self:BuildSetPage(f.pages[5]); self:CreateNPCInteractionWindow(); self:CreateItemPreviewWindow(); self:CreateItemCreator(); self:CreateQuestCreator(); self:CreateSetCreator(); self:CreateReferencePicker(); self:CreateIconPicker(); self:CreateTradeWindow(); self:CreateQuickAccessButton(); self:CreateQuestQuickAccessButton(); self:CreateInteractQuickAccessButton(); self:CreateTokenAccessButton(); self:CreateQuestTracker(); self:ShowPage(1)
+end
+function QW:CreateNPCInteractionWindow()
+  local f=CreateFrame("Frame","QuestweaverNPCInteractionFrame",UIParent,"UIPanelDialogTemplate"); self.npcInteraction=f
+  f:SetWidth(540); f:SetHeight(650); f:SetPoint("CENTER"); f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton"); f:SetScript("OnDragStart",f.StartMoving); f:SetScript("OnDragStop",f.StopMovingOrSizing); f:Hide()
+  f.title=f:CreateFontString(nil,"OVERLAY","GameFontHighlightLarge"); f.title:SetPoint("TOP",0,-10); f.title:SetText("Questweaver - NPC interaction")
+  f.npcName=f:CreateFontString(nil,"OVERLAY","GameFontNormal"); f.npcName:SetPoint("TOPLEFT",20,-48); f.npcName:SetWidth(500); f.npcName:SetJustifyH("LEFT")
+  f.headerRows={}; f.optionRows={}; f.selected=nil; f.collapsed={done=true,repeatQuests=true}
+  f.detailTitle=f:CreateFontString(nil,"OVERLAY","GameFontHighlight"); f.detailTitle:SetPoint("TOPLEFT",22,-495); f.detailTitle:SetWidth(490); f.detailTitle:SetJustifyH("LEFT")
+  f.detail=f:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); f.detail:SetPoint("TOPLEFT",22,-520); f.detail:SetWidth(490); f.detail:SetHeight(76); f.detail:SetJustifyH("LEFT"); f.detail:SetJustifyV("TOP"); f.detail:SetText("")
+  f.status=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.status:SetPoint("BOTTOMLEFT",22,18); f.status:SetWidth(320); f.status:SetJustifyH("LEFT")
+  f.action=button(f,"Choose an interaction",365,-608,145,function()
+    local option=f.selected
+    if not option then return end
+    local ok,message=QW:PerformNPCInteraction(option,f.npcID)
+    f.status:SetText(message or (ok and "Interaction complete." or "Interaction unavailable."))
+    if message and ok then QW:Print(message) end
+    QW:RefreshNPCInteraction()
+    if QW.RefreshUI then QW:RefreshUI() end
+  end)
+  button(f,"Close",20,-608,90,function() f:Hide() end)
+end
+function QW:RefreshNPCInteraction()
+  local f=self.npcInteraction; if not f or not f.npcID then return end
+  local groups=self:GetNPCInteractionOptions(f.npcID)
+  local active={}; local i
+  for i=1,self.Count(groups.progress) do active[self.Count(active)+1]=groups.progress[i] end
+  for i=1,self.Count(groups.ready) do active[self.Count(active)+1]=groups.ready[i] end
+  local specs={{"NEW QUESTS","new",groups.new},{"ACTIVE QUESTS","active",active},{"COMPLETED QUESTS","done",groups.done},{"REPEAT QUESTS","repeatQuests",groups.repeatQuests},{"CUSTOM DIALOGUE","custom",groups.custom}}
+  for i=1,self.Count(f.headerRows) do f.headerRows[i]:Hide() end
+  for i=1,self.Count(f.optionRows) do f.optionRows[i]:Hide() end
+  local headerIndex,optionIndex=0,0; local y=-70
+  local function addHeader(label)
+    headerIndex=headerIndex+1; local fs=f.headerRows[headerIndex]
+    if not fs then fs=CreateFrame("Button",nil,f); f.headerRows[headerIndex]=fs; fs:SetWidth(490); fs:SetHeight(20); fs.label=fs:CreateFontString(nil,"OVERLAY","GameFontNormal"); fs.label:SetAllPoints(); fs.label:SetJustifyH("LEFT") end
+    fs:ClearAllPoints(); fs:SetPoint("TOPLEFT",22,y); fs.label:SetText(label); fs:Show(); y=y-20
+    fs:SetScript("OnClick",nil)
+  end
+  local function addOption(option)
+    optionIndex=optionIndex+1; local b=f.optionRows[optionIndex]
+    if not b then b=CreateFrame("Button",nil,f,"UIPanelButtonTemplate"); f.optionRows[optionIndex]=b; b:SetWidth(490); b:SetHeight(22) end
+    local captured=option
+    b:ClearAllPoints(); b:SetPoint("TOPLEFT",22,y); b:SetText(captured.title or captured.id); b:SetScript("OnClick",function() f.selected=captured; QW:RefreshNPCInteraction() end); b:Show(); y=y-24
+  end
+  local si,entry
+  for si=1,self.Count(specs) do
+    local spec=specs[si]; local list=spec[3] or {}
+    if self.Count(list)>0 then
+      addHeader((f.collapsed[spec[2]] and "+ " or "- ")..spec[1].." ("..self.Count(list)..")")
+      local header=f.headerRows[headerIndex]; local category=spec[2]
+      header:SetScript("OnClick",function() f.collapsed[category]=not f.collapsed[category]; QW:RefreshNPCInteraction() end)
+      if not f.collapsed[spec[2]] then
+        local shown=math.min(self.Count(list),12)
+        for i=1,shown do addOption(list[i]) end
+        if self.Count(list)>shown then addHeader("Collapse another section to make room for more quests.") end
+      end
+    end
+  end
+  if headerIndex==0 then addHeader("NO QUESTWEAVER INTERACTIONS") end
+  local found=false
+  if f.selected then
+    for _,list in pairs(groups) do for i=1,self.Count(list) do if list[i].id==f.selected.id and list[i].kind==f.selected.kind then f.selected=list[i]; found=true end end end
+  end
+  if not found then
+    f.selected=nil
+    for si=1,self.Count(specs) do local list=specs[si][3]; if list and self.Count(list)>0 then f.selected=list[1]; break end end
+  end
+  local selected=f.selected
+  if selected then
+    f.detailTitle:SetText(selected.title or "Interaction")
+    local detail=selected.dialogue and selected.dialogue~="" and selected.dialogue or selected.text or ""
+    f.detail:SetText(detail)
+    local actionLabels={offer="Accept quest",quest="Accept quest",custom="Listen",turnin="Receive reward",objective="Continue quest",active="Open quest journal",done="Completed",["repeat"]="Accept again"}
+    f.action:SetText(actionLabels[selected.kind] or "Choose an interaction")
+    if selected.kind=="done" then f.action:Disable() else f.action:Enable() end
+  else
+    f.detailTitle:SetText(""); f.detail:SetText("This NPC has no quests or custom dialogue in Questweaver."); f.action:SetText("No interaction available"); f.action:Disable()
+  end
+end
+function QW:ShowNPCInteraction(npcID,npcName)
+  local f=self.npcInteraction; if not f then return false end
+  f.npcID=npcID; f.npcGUID=UnitGUID and UnitGUID("target"); f.npcName:SetText("Target: "..(npcName or "NPC").." (ID "..npcID..")"); f.status:SetText(""); f.selected=nil
+  self:RefreshNPCInteraction(); f:Show(); return true
+end
+function QW:ShowPage(index) for i,p in ipairs(self.ui.pages) do if i==index then p:Show() else p:Hide() end end; self:RefreshUI() end
+function QW:ToggleUI() if self.ui:IsShown() then self.ui:Hide() else self.ui:Show(); self:RefreshUI() end end
+function QW:ShowRPInventory()
+  if not self.ui then return end
+  self.ui:Show(); self:ShowPage(1)
+end
+function QW:ShowMakerInventory() if not self.ui then return end; self.ui:Show(); self:ShowPage(2) end
+function QW:Status(page,message) page.status:SetText(message or "") end
+function QW:BuildMakerPage(p)
+  p.heading=p:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); p.heading:SetPoint("TOPLEFT",8,-8); p.heading:SetText("MAKER INVENTORY - item definitions; grant only RP-friendly categories to your satchel")
+  p.buttons={}
+  for i=1,8 do
+    local b=button(p,"",8,-30-(i-1)*28,245,function(self) p.selectedID=self.itemID; p.deleteArmed=nil; QW:RefreshMakerInventory() end)
+    b.icon=b:CreateTexture(nil,"ARTWORK"); b.icon:SetWidth(20); b.icon:SetHeight(20); b.icon:SetPoint("LEFT",5,0); p.buttons[i]=b
+  end
+  p.detailTitle=p:CreateFontString(nil,"OVERLAY","GameFontHighlight"); p.detailTitle:SetPoint("TOPLEFT",275,-35); p.detailTitle:SetWidth(300); p.detailTitle:SetJustifyH("LEFT")
+  p.detail=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.detail:SetPoint("TOPLEFT",275,-62); p.detail:SetWidth(300); p.detail:SetHeight(160); p.detail:SetJustifyH("LEFT"); p.detail:SetJustifyV("TOP")
+  p.amount=text(p,"Quantity to add",275,-250,80); p.amount:SetText("1")
+  button(p,"Add to RP satchel",365,-250,145,function()
+    if not p.selectedID then QW:Status(p,"Select a Maker Inventory item first."); return end
+    local ok,message=QW:GrantMakerItem(p.selectedID,p.amount:GetText()); QW:Status(p,message); QW:RefreshInventoryGrid(QW.ui.pages[1])
+  end)
+  p.delete=button(p,"Delete definition",275,-290,145,function()
+    if not p.selectedID then QW:Status(p,"Select a Maker Inventory item first."); return end
+    if not p.deleteArmed or p.deleteArmed~=p.selectedID then p.deleteArmed=p.selectedID; p.delete:SetText("Confirm delete"); QW:Status(p,"Click again to delete this definition. Quest/set references, owned satchel stacks, and the default token are protected."); return end
+    local id=p.selectedID; local ok,message=QW:DeleteMakerItem(id); p.deleteArmed=nil; p.delete:SetText("Delete definition"); if ok then p.selectedID=nil end; QW:Status(p,message); QW:RefreshMakerInventory()
+  end)
+  p.prev=button(p,"<",8,-263,38,function() p.page=math.max(1,(p.page or 1)-1); QW:RefreshMakerInventory() end)
+  p.pageText=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.pageText:SetPoint("TOPLEFT",52,-268); p.pageText:SetWidth(55); p.pageText:SetJustifyH("CENTER")
+  p.next=button(p,">",111,-263,38,function() p.page=(p.page or 1)+1; QW:RefreshMakerInventory() end)
+  p.status=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.status:SetPoint("TOPLEFT",8,-350); p.status:SetWidth(570); p.status:SetJustifyH("LEFT")
+end
+function QW:RefreshMakerInventory()
+  if not self.ui or not self.ui.pages[2] then return end
+  local p=self.ui.pages[2]; local items={}; for id,item in pairs(self.db.items) do items[self.Count(items)+1]=item end
+  table.sort(items,function(a,b) return a.name<b.name end)
+  local pageCount=math.max(1,math.ceil(self.Count(items)/self.Count(p.buttons))); p.page=math.min(math.max(1,p.page or 1),pageCount); p.pageText:SetText(p.page.." / "..pageCount); p.prev:SetEnabled(p.page>1); p.next:SetEnabled(p.page<pageCount)
+  local selected
+  for i=1,self.Count(items) do if items[i].id==p.selectedID then selected=items[i]; break end end
+  if not selected and items[1] then selected=items[1]; p.selectedID=selected.id end
+  local offset=(p.page-1)*self.Count(p.buttons)
+  for i=1,self.Count(p.buttons) do
+    local b=p.buttons[i]; local item=items[offset+i]
+    if item then b.itemID=item.id; b.icon:SetTexture(item.icon); b:SetText("  "..item.name.."  ["..(item.category or "misc").."]"); b:Show()
+    else b.itemID=nil; b.icon:SetTexture(nil); b:Hide() end
+  end
+  if selected then
+    p.detailTitle:SetText(selected.name); p.detail:SetText("Category: "..(selected.category or "misc").."\nMax stack: "..(selected.maxStack or 1).."\nDefinition ID: "..selected.id.."\n\n"..(selected.description or ""))
+    p.delete:Enable(); p.delete:SetText(p.deleteArmed==selected.id and "Confirm delete" or "Delete definition")
+  else p.selectedID=nil; p.detailTitle:SetText("No maker items"); p.detail:SetText("Create an item definition from the Create tab. Definitions do not automatically enter your satchel."); p.delete:Disable() end
+end
+function QW:BuildInventoryPage(p)
+  p.list=p:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); p.list:SetPoint("TOPLEFT",8,-8); p.list:SetJustifyH("LEFT"); p.list:SetWidth(580); p.list:SetText("RP SATCHEL - click an item, then open the trade window to offer it")
+  p.bag=CreateFrame("Frame",nil,p); p.bag:SetPoint("TOPLEFT",8,-28); p.bag:SetWidth(388); p.bag:SetHeight(212)
+  p.bag.bg=p.bag:CreateTexture(nil,"BACKGROUND"); p.bag.bg:SetAllPoints(p.bag); p.bag.bg:SetTexture("Interface\\Buttons\\WHITE8X8"); p.bag.bg:SetVertexColor(.10,.055,.025,.96)
+  local function bagEdge()
+    local edge=p.bag:CreateTexture(nil,"BORDER"); edge:SetTexture("Interface\\Buttons\\WHITE8X8"); edge:SetVertexColor(.55,.34,.14,1); return edge
+  end
+  p.bag.top=bagEdge(); p.bag.top:SetPoint("TOPLEFT",p.bag,"TOPLEFT",0,0); p.bag.top:SetPoint("TOPRIGHT",p.bag,"TOPRIGHT",0,0); p.bag.top:SetHeight(2)
+  p.bag.bottom=bagEdge(); p.bag.bottom:SetPoint("BOTTOMLEFT",p.bag,"BOTTOMLEFT",0,0); p.bag.bottom:SetPoint("BOTTOMRIGHT",p.bag,"BOTTOMRIGHT",0,0); p.bag.bottom:SetHeight(2)
+  p.bag.left=bagEdge(); p.bag.left:SetPoint("TOPLEFT",p.bag,"TOPLEFT",0,0); p.bag.left:SetPoint("BOTTOMLEFT",p.bag,"BOTTOMLEFT",0,0); p.bag.left:SetWidth(2)
+  p.bag.right=bagEdge(); p.bag.right:SetPoint("TOPRIGHT",p.bag,"TOPRIGHT",0,0); p.bag.right:SetPoint("BOTTOMRIGHT",p.bag,"BOTTOMRIGHT",0,0); p.bag.right:SetWidth(2)
+  p.bag.title=p.bag:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); p.bag.title:SetPoint("TOPLEFT",12,-8); p.bag.title:SetText("RP ITEMS")
+  p.slots={}
+  local i
+  for i=1,32 do
+    local slot=CreateFrame("Button",nil,p.bag); slot:SetWidth(42); slot:SetHeight(42)
+    if slot.RegisterForClicks then slot:RegisterForClicks("LeftButtonUp","RightButtonUp") end
+    local column=(i-1)%8; local row=math.floor((i-1)/8); slot:SetPoint("TOPLEFT",12+column*46,-28-row*45)
+    slot.border=slot:CreateTexture(nil,"BACKGROUND"); slot.border:SetAllPoints(slot); slot.border:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+    slot.selection={}
+    local function selectionEdge(point1,relativePoint1,point2,relativePoint2,width,height)
+      local edge=slot:CreateTexture(nil,"OVERLAY"); edge:SetTexture("Interface\\Buttons\\WHITE8X8"); edge:SetVertexColor(1,.72,.15,1)
+      if point2 then edge:SetPoint(point1,slot,relativePoint1); edge:SetPoint(point2,slot,relativePoint2) else edge:SetPoint(point1,slot,relativePoint1) end
+      if width then edge:SetWidth(width) end; if height then edge:SetHeight(height) end
+      edge:Hide(); return edge
+    end
+    slot.selection.top=selectionEdge("TOPLEFT","TOPLEFT","TOPRIGHT","TOPRIGHT",nil,2)
+    slot.selection.bottom=selectionEdge("BOTTOMLEFT","BOTTOMLEFT","BOTTOMRIGHT","BOTTOMRIGHT",nil,2)
+    slot.selection.left=selectionEdge("TOPLEFT","TOPLEFT","BOTTOMLEFT","BOTTOMLEFT",2,nil)
+    slot.selection.right=selectionEdge("TOPRIGHT","TOPRIGHT","BOTTOMRIGHT","BOTTOMRIGHT",2,nil)
+    slot.icon=slot:CreateTexture(nil,"ARTWORK"); slot.icon:SetPoint("TOPLEFT",slot,"TOPLEFT",4,-4); slot.icon:SetPoint("BOTTOMRIGHT",slot,"BOTTOMRIGHT",-4,4)
+    slot.count=slot:CreateFontString(nil,"OVERLAY","NumberFontNormalSmall"); slot.count:SetPoint("BOTTOMRIGHT",slot,"BOTTOMRIGHT",-3,3)
+    slot:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+    slot:SetScript("OnEnter",function(self)
+      if not self.item then return end
+      GameTooltip:SetOwner(self,"ANCHOR_RIGHT"); GameTooltip:SetText(self.item.name)
+      GameTooltip:AddLine(self.item.description,1,1,1,true); GameTooltip:AddLine("RP quantity: "..self.quantity,.8,.8,.8)
+      GameTooltip:AddLine(self.item.id,.5,.5,.5); GameTooltip:AddLine("Right-click to insert an item link in chat",.7,.7,.7); GameTooltip:Show()
+    end)
+    slot:SetScript("OnLeave",function() GameTooltip:Hide() end)
+    slot:SetScript("OnClick",function(self,mouseButton)
+      mouseButton=mouseButton or arg1
+      if not self.item then return end
+      if mouseButton=="RightButton" then QW:InsertItemLinkIntoChat(self.item.id)
+      else p.selectedItem=self.item; p.removeArmed=nil; p.removeButton:SetText("Remove selected"); p.removeQuantity:SetText("1"); QW:RefreshInventorySelection(p); QW:Status(p,"Selected "..self.item.name..". Open RP trade or remove a quantity.") end
+    end)
+    p.slots[QW.Count(p.slots)+1]=slot
+  end
+  button(p,"Open RP trade",8,-252,145,function() QW:ShowTradeWindow(); if p.selectedItem then QW.tradeWindow.selectedItem=p.selectedItem; QW:RefreshTradeWindow() end end)
+  p.removeButton=button(p,"Remove selected",160,-252,130,function()
+    if not p.selectedItem then QW:Status(p,"Select an RP inventory item first."); return end
+    local amount=tonumber(p.removeQuantity:GetText())
+    if not p.removeArmed then
+      p.removeArmed={id=p.selectedItem.id,amount=p.removeQuantity:GetText()}; p.removeButton:SetText("Confirm removal")
+      QW:Status(p,"Click Confirm removal again to delete "..tostring(p.removeQuantity:GetText()).." from your RP inventory."); return
+    end
+    if p.removeArmed.id~=p.selectedItem.id or p.removeArmed.amount~=p.removeQuantity:GetText() then
+      p.removeArmed=nil; p.removeButton:SetText("Remove selected"); QW:Status(p,"Selection or quantity changed. Click Remove selected again to confirm."); return
+    end
+    local ok,message=QW:RemoveRPItem(p.selectedItem.id,amount); p.removeArmed=nil; p.removeButton:SetText("Remove selected")
+    if ok and (QW.db.inventory[p.selectedItem.id] or 0)==0 then p.selectedItem=nil end
+    QW:Status(p,message); QW:RefreshInventoryGrid(p); QW:RefreshQuickAccessButton()
+  end)
+  p.removeQuantity=text(p,"Quantity",302,-251,48); p.removeQuantity:SetText("1")
+  p.removeQuantity:SetScript("OnTextChanged",function() p.removeArmed=nil; p.removeButton:SetText("Remove selected") end)
+  p.status=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.status:SetPoint("TOPLEFT",8,-280); p.status:SetWidth(570); p.status:SetJustifyH("LEFT")
+  p.tradeList=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.tradeList:SetPoint("TOPLEFT",8,-308); p.tradeList:SetWidth(570); p.tradeList:SetJustifyH("LEFT")
+end
+function QW:RefreshInventoryGrid(p)
+  local entries={}
+  for id,quantity in pairs(self.db.inventory) do
+    local item=self.db.items[id]
+    if item then entries[QW.Count(entries)+1]={item=item,quantity=quantity} end
+  end
+  table.sort(entries,function(a,b) return a.item.name<b.item.name end)
+  local i
+  for i=1,self.Count(p.slots) do
+    local slot=p.slots[i]; local entry=entries[i]
+    if entry then
+      slot.item=entry.item; slot.quantity=entry.quantity; slot.icon:SetTexture(entry.item.icon or "Interface\\Icons\\INV_Misc_QuestionMark"); slot.count:SetText(entry.quantity>1 and entry.quantity or ""); slot:Show()
+    else
+      slot.item=nil; slot.quantity=nil; slot.icon:SetTexture(nil); slot.count:SetText(""); slot:Show()
+    end
+  end
+  if p.selectedItem and not self.db.inventory[p.selectedItem.id] then p.selectedItem=nil end
+  self:RefreshInventorySelection(p)
+  if self.Count(entries)>self.Count(p.slots) then p.list:SetText("RP SATCHEL - first "..self.Count(p.slots).." item types shown") else p.list:SetText("RP SATCHEL - click an item, then open the trade window to offer it") end
+end
+function QW:RefreshInventorySelection(p)
+  if not p or not p.slots then return end
+  local i,edge
+  for i=1,self.Count(p.slots) do
+    local slot=p.slots[i]; local selected=p.selectedItem and slot.item and slot.item.id==p.selectedItem.id
+    for _,edge in pairs(slot.selection or {}) do if selected then edge:Show() else edge:Hide() end end
+  end
+end
+function QW:CreateQuickAccessButton()
+  local f=CreateFrame("Button","QuestweaverQuickAccessButton",UIParent); self.quickAccess=f
+  f:SetWidth(42); f:SetHeight(42); f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton")
+  local saved=self.db.ui and self.db.ui.quickAccess
+  if saved and saved.point and saved.relativePoint and saved.x and saved.y then f:SetPoint(saved.point,UIParent,saved.relativePoint,saved.x,saved.y) else f:SetPoint("RIGHT",UIParent,"RIGHT",-22,0) end
+  f.border=f:CreateTexture(nil,"BACKGROUND"); f.border:SetAllPoints(f); f.border:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+  f.icon=f:CreateTexture(nil,"ARTWORK"); f.icon:SetPoint("TOPLEFT",f,"TOPLEFT",4,-4); f.icon:SetPoint("BOTTOMRIGHT",f,"BOTTOMRIGHT",-4,4); f.icon:SetTexture("Interface\\Icons\\INV_Misc_Bag_05")
+  f.count=f:CreateFontString(nil,"OVERLAY","NumberFontNormalSmall"); f.count:SetPoint("BOTTOMRIGHT",f,"BOTTOMRIGHT",-3,3)
+  f:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+  f:SetScript("OnEnter",function(self)
+    GameTooltip:SetOwner(self,"ANCHOR_LEFT"); GameTooltip:SetText("Questweaver RP Satchel"); GameTooltip:AddLine("Left-click: open RP inventory",1,1,1); GameTooltip:AddLine("Shift + left-drag: move this button",.7,.7,.7); GameTooltip:Show()
+  end)
+  f:SetScript("OnLeave",function() GameTooltip:Hide() end)
+  f:SetScript("OnClick",function(_,mouseButton)
+    mouseButton=mouseButton or arg1
+    if f.moved then f.moved=nil; return end
+    if mouseButton=="LeftButton" and not IsShiftKeyDown() then QW:ShowRPInventory() end
+  end)
+  f:SetScript("OnDragStart",function(self) if IsShiftKeyDown() then self.moving=true; self:StartMoving() end end)
+  f:SetScript("OnDragStop",function(self)
+    if not self.moving then return end
+    self:StopMovingOrSizing()
+    local point,_,relativePoint,x,y=self:GetPoint()
+    QW.db.ui=QW.db.ui or {}; QW.db.ui.quickAccess={point=point,relativePoint=relativePoint,x=x,y=y}
+    self.moving=nil; self.moved=true
+  end)
+  self:RefreshQuickAccessButton()
+end
+function QW:RefreshQuickAccessButton()
+  local f=self.quickAccess; if not f or not self.db then return end
+  local types=0; for id,quantity in pairs(self.db.inventory) do if quantity>0 and self.db.items[id] then types=types+1 end end
+  f.count:SetText(types>0 and types or "")
+  self:RefreshTokenAccessButton()
+end
+function QW:CreateTokenAccessButton()
+  local f=CreateFrame("Button","QuestweaverTokenAccessButton",UIParent); self.tokenAccess=f
+  f:SetWidth(42); f:SetHeight(42); f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton")
+  local saved=self.db.ui and self.db.ui.tokenAccess
+  if saved and saved.point and saved.relativePoint and saved.x and saved.y then f:SetPoint(saved.point,UIParent,saved.relativePoint,saved.x,saved.y)
+  else f:SetPoint("RIGHT",UIParent,"RIGHT",-22,-156) end
+  f.border=f:CreateTexture(nil,"BACKGROUND"); f.border:SetAllPoints(f); f.border:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+  f.icon=f:CreateTexture(nil,"ARTWORK"); f.icon:SetPoint("TOPLEFT",f,"TOPLEFT",4,-4); f.icon:SetPoint("BOTTOMRIGHT",f,"BOTTOMRIGHT",-4,4); f.icon:SetTexture("Interface\\Icons\\INV_Misc_Coin_09")
+  f.count=f:CreateFontString(nil,"OVERLAY","NumberFontNormalSmall"); f.count:SetPoint("BOTTOMRIGHT",f,"BOTTOMRIGHT",-2,2)
+  f:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+  f:SetScript("OnEnter",function(self)
+    GameTooltip:SetOwner(self,"ANCHOR_LEFT"); GameTooltip:SetText("Questweaver RP Tokens"); GameTooltip:AddLine("In your RP inventory: "..QW:GetRPTokenCount(),1,1,1); GameTooltip:AddLine("Left-click: open RP inventory",.8,.8,.8); GameTooltip:AddLine("Shift + left-drag: move this counter",.7,.7,.7); GameTooltip:Show()
+  end)
+  f:SetScript("OnLeave",function() GameTooltip:Hide() end)
+  f:SetScript("OnClick",function(_,mouseButton)
+    mouseButton=mouseButton or arg1
+    if f.moved then f.moved=nil; return end
+    if mouseButton=="LeftButton" and not IsShiftKeyDown() then QW:ShowRPInventory() end
+  end)
+  f:SetScript("OnDragStart",function(self) if IsShiftKeyDown() then self.moving=true; self:StartMoving() end end)
+  f:SetScript("OnDragStop",function(self)
+    if not self.moving then return end
+    self:StopMovingOrSizing()
+    local point,_,relativePoint,x,y=self:GetPoint()
+    QW.db.ui=QW.db.ui or {}; QW.db.ui.tokenAccess={point=point,relativePoint=relativePoint,x=x,y=y}
+    self.moving=nil; self.moved=true
+  end)
+  self:RefreshTokenAccessButton()
+end
+function QW:RefreshTokenAccessButton()
+  local f=self.tokenAccess; if not f or not self.db then return end
+  local count=self:GetRPTokenCount()
+  f.count:SetText(count>0 and (count>999 and "999+" or count) or "0")
+end
+function QW:CreateQuestQuickAccessButton()
+  local f=CreateFrame("Button","QuestweaverQuestAccessButton",UIParent); self.questAccess=f
+  f:SetWidth(42); f:SetHeight(42); f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton")
+  local saved=self.db.ui and self.db.ui.questAccess
+  if saved and saved.point and saved.relativePoint and saved.x and saved.y then f:SetPoint(saved.point,UIParent,saved.relativePoint,saved.x,saved.y) else f:SetPoint("RIGHT",UIParent,"RIGHT",-22,-52) end
+  f.border=f:CreateTexture(nil,"BACKGROUND"); f.border:SetAllPoints(f); f.border:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+  f.icon=f:CreateTexture(nil,"ARTWORK"); f.icon:SetPoint("TOPLEFT",f,"TOPLEFT",4,-4); f.icon:SetPoint("BOTTOMRIGHT",f,"BOTTOMRIGHT",-4,4); f.icon:SetTexture("Interface\\Icons\\INV_Misc_Note_01")
+  f.count=f:CreateFontString(nil,"OVERLAY","NumberFontNormalSmall"); f.count:SetPoint("BOTTOMRIGHT",f,"BOTTOMRIGHT",-3,3)
+  f:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+  f:SetScript("OnEnter",function(self)
+    GameTooltip:SetOwner(self,"ANCHOR_LEFT"); GameTooltip:SetText("Questweaver Active Quests"); GameTooltip:AddLine("Left-click: open accepted RP quests",1,1,1); GameTooltip:AddLine("Shift + left-drag: move this button",.7,.7,.7); GameTooltip:Show()
+  end)
+  f:SetScript("OnLeave",function() GameTooltip:Hide() end)
+  f:SetScript("OnClick",function(_,mouseButton)
+    mouseButton=mouseButton or arg1
+    if f.moved then f.moved=nil; return end
+    if mouseButton=="LeftButton" and not IsShiftKeyDown() then QW:ShowActiveQuests() end
+  end)
+  f:SetScript("OnDragStart",function(self) if IsShiftKeyDown() then self.moving=true; self:StartMoving() end end)
+  f:SetScript("OnDragStop",function(self)
+    if not self.moving then return end
+    self:StopMovingOrSizing()
+    local point,_,relativePoint,x,y=self:GetPoint()
+    QW.db.ui=QW.db.ui or {}; QW.db.ui.questAccess={point=point,relativePoint=relativePoint,x=x,y=y}
+    self.moving=nil; self.moved=true
+  end)
+  self:RefreshQuestQuickAccessButton()
+end
+function QW:CreateInteractQuickAccessButton()
+  local f=CreateFrame("Button","QuestweaverInteractAccessButton",UIParent); self.interactAccess=f
+  f:SetWidth(42); f:SetHeight(42); f:SetFrameStrata("DIALOG"); f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton")
+  local saved=self.db.ui and self.db.ui.interactAccess
+  if saved and saved.point and saved.relativePoint and saved.x and saved.y then f:SetPoint(saved.point,UIParent,saved.relativePoint,saved.x,saved.y) else f:SetPoint("RIGHT",UIParent,"RIGHT",-22,-104) end
+  f.border=f:CreateTexture(nil,"BORDER"); f.border:SetAllPoints(f); f.border:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+  f.icon=f:CreateTexture(nil,"ARTWORK"); f.icon:SetPoint("TOPLEFT",f,"TOPLEFT",4,-4); f.icon:SetPoint("BOTTOMRIGHT",f,"BOTTOMRIGHT",-4,4); f.icon:SetTexture("Interface\\Icons\\INV_Misc_Note_02")
+  f:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+  f:SetScript("OnEnter",function(self)
+    GameTooltip:SetOwner(self,"ANCHOR_LEFT"); GameTooltip:SetText("Questweaver NPC interaction"); GameTooltip:AddLine("Target an NPC to browse its quests and custom dialogue.",1,1,1,true); GameTooltip:AddLine("Equivalent to /qw interact",.7,.7,.7); GameTooltip:AddLine("Shift + left-drag: move this button",.7,.7,.7); GameTooltip:Show()
+  end)
+  f:SetScript("OnLeave",function() GameTooltip:Hide() end)
+  f:SetScript("OnClick",function(_,mouseButton)
+    mouseButton=mouseButton or arg1
+    if f.moved then f.moved=nil; return end
+    if mouseButton=="LeftButton" and not IsShiftKeyDown() then
+    local ok,message=QW:InteractWithTarget(); if not ok then QW:Print(message or "Could not open NPC interactions.") end; QW:RefreshUI()
+    end
+  end)
+  f:SetScript("OnDragStart",function(self) if IsShiftKeyDown() then self.moving=true; self:StartMoving() end end)
+  f:SetScript("OnDragStop",function(self)
+    if not self.moving then return end
+    self:StopMovingOrSizing()
+    local point,_,relativePoint,x,y=self:GetPoint()
+    QW.db.ui=QW.db.ui or {}; QW.db.ui.interactAccess={point=point,relativePoint=relativePoint,x=x,y=y}
+    self.moving=nil; self.moved=true
+  end)
+end
+function QW:RefreshQuestQuickAccessButton()
+  local f=self.questAccess; if not f or not self.db then return end
+  local active=0; for _,run in pairs(self.db.questRuns) do if run.state=="active" or run.state=="awaiting approval" or run.state=="ready_to_turn_in" then active=active+1 end end
+  f.count:SetText(active>0 and active or "")
+end
+function QW:RefreshInteractQuickAccessButton()
+  local f=self.interactAccess; if not f then return end
+  -- Kept as a dedicated refresh point so future NPC-offer indicators can be added
+  -- without changing the quick-access button's interaction behavior.
+end
+function QW:BuildQuestPage(p)
+  p.heading=p:CreateFontString(nil,"OVERLAY","GameFontHighlight"); p.heading:SetPoint("TOPLEFT",8,-8); p.heading:SetText("Quest Journal")
+  p.questSections={}
+  local categories={{key="yours",label="YOUR QUESTS"},{key="completed",label="COMPLETED"},{key="open",label="OPEN QUESTS"}}
+  for i=1,3 do
+    local category=categories[i]
+    local header=button(p,"",8,0,245,function(self)
+      p.collapsed=p.collapsed or {}; local expand=p.collapsed[category.key]; for _,other in ipairs({"yours","completed","open"}) do p.collapsed[other]=other~=category.key end; p.collapsed[category.key]=not expand; QW:RefreshQuestJournal()
+    end)
+    p.questSections[category.key]={category=category,header=header,entries={}}
+  end
+  p.questButtons={}
+  local i
+  for i=1,8 do
+    local entry=button(p,"",8,0,245,function(self) p.selectedKey=self.questKey; p.deleteArmed=nil; QW:RefreshQuestJournal() end)
+    entry:SetWidth(245); entry.questKey=nil; entry:Hide(); p.questButtons[QW.Count(p.questButtons)+1]=entry
+  end
+  p.empty=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.empty:SetPoint("TOPLEFT",8,-35); p.empty:SetWidth(245); p.empty:SetJustifyH("LEFT")
+  p.detailTitle=p:CreateFontString(nil,"OVERLAY","GameFontHighlight"); p.detailTitle:SetPoint("TOPLEFT",275,-32); p.detailTitle:SetWidth(300); p.detailTitle:SetJustifyH("LEFT")
+  p.detail=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.detail:SetPoint("TOPLEFT",275,-62); p.detail:SetWidth(300); p.detail:SetJustifyH("LEFT")
+  p.primary=button(p,"Select a quest",275,-285,145,function() end)
+  p.resend=button(p,"Resend delivery",430,-285,125,function() end); p.resend:Hide()
+  p.deleteQuest=button(p,"Delete quest",430,-344,125,function()
+    local id=p.selectedQuestID; if not id then return end
+    if p.deleteArmed~=id then p.deleteArmed=id; p.deleteQuest:SetText("Confirm delete"); QW:Status(p,"Click again to delete. Active runs and Set references must be removed first."); return end
+    local ok,message=QW:DeleteQuest(id); p.deleteArmed=nil; QW:Status(p,message); QW:RefreshQuestJournal()
+  end); p.deleteQuest:ClearAllPoints(); p.deleteQuest:SetPoint("TOPLEFT",430,-334); p.deleteQuest:Hide()
+  p.clearAccepted=button(p,"Remove accepted quests",8,-310,180,function()
+    if p.clearArmed then
+      local ok,message=QW:ClearAcceptedQuests(); p.clearArmed=false; QW:Status(p,message); QW:RefreshQuestJournal()
+    else
+      local count=QW.Count(QW.db.questRuns); p.clearArmed=true; p.clearAccepted:SetText("Click again: confirm"); QW:Status(p,"Click Remove accepted quests again to remove "..count.." accepted quest record"..(count==1 and "." or "s."))
+    end
+  end)
+  p.shareTarget=text(p,"Share with (character name)",275,-310,280); p.shareTarget:Hide(); p.shareTarget.label:Hide()
+  p.approval=text(p,"Approve: quest ID | step | player",8,-355,410); button(p,"Approve",430,-358,80,function() local a=splitUI(p.approval:GetText()); local ok,msg=QW:ApproveQuest(a[1],a[2],a[3]); QW:Status(p,msg or (ok and "Approved.")) end)
+  p.inbox=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.inbox:SetPoint("TOPLEFT",8,-395); p.inbox:SetWidth(560); p.inbox:SetJustifyH("LEFT")
+  p.status=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.status:SetPoint("TOPLEFT",8,-445); p.status:SetWidth(570); p.status:SetJustifyH("LEFT")
+end
+function QW:ShowQuestJournal()
+  if not self.ui then return end
+  self.questJournalMode="all"
+  self.ui:Show(); self:ShowPage(3)
+end
+function QW:ShowSets()
+  if not self.ui then return end
+  self.ui:Show(); self:ShowPage(5)
+end
+function QW:ShowActiveQuests()
+  if not self.ui then return end
+  self.questJournalMode="active"
+  self.ui:Show(); self:ShowPage(3)
+end
+function QW:OpenQuestForSharing(id)
+  local q=self.db.quests[id]
+  if not q or not self.questCreator then return false end
+  local f=self.questCreator; local stepLines={}; local placeLines={}; local extra={}; local used={[q.rewardID]=true}
+  for _,step in ipairs(q.steps or {}) do
+    stepLines[self.Count(stepLines)+1]=table.concat({self:Escape(step.type or ""),self:Escape(step.itemID or ""),self:Escape(step.count or ""),self:Escape(step.placeID or ""),self:Escape(step.mobName or ""),self:Escape(step.text or "")},"~")
+    if step.itemID and step.itemID~="" then used[step.itemID]=true end
+  end
+  for _,place in ipairs(q.places or {}) do placeLines[self.Count(placeLines)+1]=table.concat({self:Escape(place.id),self:Escape(place.zone),self:Escape(place.x or ""),self:Escape(place.y or ""),self:Escape(place.radius or ""),self:Escape(place.description or "")},"~") end
+  for itemID in pairs(q.itemDefinitions or {}) do if not used[itemID] then extra[self.Count(extra)+1]=itemID end end
+  table.sort(extra)
+  f.qtitle:SetText(q.title or ""); f.qdesc:SetText(q.description or ""); f.reward:SetText(q.rewardID or ""); f.rewardCountValue=q.rewardCount or 1; f.giverPlaceIDValue=q.giverPlaceID or ""; f.steps:SetText(table.concat(stepLines,";")); f.places:SetText(table.concat(placeLines,";")); f.questItems:SetText(table.concat(extra,","))
+  f.followUp:SetText(q.followUpQuestID or ""); f.predecessor:SetText(q.predecessorQuestID or ""); f.giverTarget:SetText(q.giverNPCID and ("npc:"..q.giverNPCID) or ""); f.giverDialogue:SetText(q.giverDialogue or ""); f.turnInTarget:SetText(q.turnInNPCID and ("npc:"..q.turnInNPCID) or ""); f.qid:SetText(q.id); f.qtarget:SetText(""); f.editingID=q.id; f.createButton:SetText("Save changes")
+  f:Show(); f:Raise(); f.qtitle:SetFocus()
+  return true
+end
+function QW:RefreshQuestJournal()
+  self:RefreshQuestQuickAccessButton()
+  local p=self.ui.pages[3]; local entries={}; local categories={yours={},completed={},open={}}; local id,run
+  local activeOnly=self.questJournalMode=="active"
+  for id,run in pairs(self.db.questRuns) do
+    local entry={key="run:"..id,kind="run",id=id,data=run}
+    if run.state=="complete" then categories.completed[self.Count(categories.completed)+1]=entry
+    elseif not activeOnly or run.state=="active" or run.state=="awaiting approval" or run.state=="ready_to_turn_in" then categories.open[self.Count(categories.open)+1]=entry end
+  end
+  local quest
+  for id,quest in pairs(self.db.questOffers) do categories.open[self.Count(categories.open)+1]={key="offer:"..id,kind="offer",id=id,data=quest} end
+  for id,quest in pairs(self.db.quests) do categories.yours[self.Count(categories.yours)+1]={key="quest:"..id,kind="quest",id=id,data=quest} end
+  local categoryOrder={"open","yours","completed"}; local renderOrder={"yours","completed","open"}
+  local all={}
+  for _,categoryKey in ipairs(categoryOrder) do
+    table.sort(categories[categoryKey],function(a,b) return (a.data.title or "")<(b.data.title or "") end)
+    for _,entry in ipairs(categories[categoryKey]) do all[self.Count(all)+1]=entry end
+  end
+  entries=all
+  p.collapsed=p.collapsed or {yours=true,completed=true,open=false}
+  if not p.collapsedInitialized and not activeOnly then
+    if self.Count(categories.open)==0 and self.Count(categories.yours)>0 then p.collapsed.yours=false; p.collapsed.open=true
+    elseif self.Count(categories.open)==0 and self.Count(categories.yours)==0 and self.Count(categories.completed)>0 then p.collapsed.completed=false; p.collapsed.open=true end
+    p.collapsedInitialized=true
+  end
+  if activeOnly then p.collapsed.yours=true; p.collapsed.completed=true; p.collapsed.open=false end
+  local selected
+  if p.selectedKey then for i=1,self.Count(entries) do if entries[i].key==p.selectedKey then selected=entries[i]; break end end end
+  if not selected and entries[1] then selected=entries[1]; p.selectedKey=selected.key end
+  p.selectedRunID=selected and selected.kind=="run" and selected.id or nil
+  local row=0; local buttonIndex=0
+  for _,entry in ipairs(p.questButtons) do entry.questKey=nil; entry:Hide() end
+  for _,categoryKey in ipairs(renderOrder) do
+    local section=p.questSections[categoryKey]; local group=categories[categoryKey]
+    section.header:ClearAllPoints(); section.header:SetPoint("TOPLEFT",8,-32-row*25); section.header:SetText((p.collapsed[categoryKey] and "+ " or "- ")..section.category.label.." ("..self.Count(group)..")"); section.header:Show(); row=row+1
+    if not p.collapsed[categoryKey] then
+      for _,data in ipairs(group) do
+        buttonIndex=buttonIndex+1; local entry=p.questButtons[buttonIndex]; if not entry then break end
+        entry:ClearAllPoints(); entry:SetPoint("TOPLEFT",19,-32-row*25); entry:SetWidth(234); entry.questKey=data.key
+        if data.kind=="run" then entry:SetText("["..string.upper(data.data.state).."] "..string.sub(data.data.title,1,25))
+        elseif data.kind=="offer" then entry:SetText("[OFFER] "..string.sub(data.data.title,1,29))
+        else entry:SetText(string.sub(data.data.title,1,34)) end
+        entry:Show(); row=row+1
+      end
+    end
+  end
+  p.heading:SetText(activeOnly and "Active Quests - accepted quests you are currently following" or "Quest Journal - expand a section and select a quest")
+  p.empty:SetText(""); p.empty:Hide()
+  if not p.clearArmed then p.clearAccepted:SetText("Remove accepted quests") end
+  p.primary:Enable(); p.resend:Hide(); p.deleteQuest:Hide(); p.selectedQuestID=nil; p.shareTarget:Hide(); p.shareTarget.label:Hide()
+  if not selected then
+    p.detailTitle:SetText("Select a quest"); p.detail:SetText("Expand Your Quests to edit or share quests you authored. Open Quests contains accepted and offered quests; Completed keeps finished quest records for reference.")
+    p.primary:SetText("Select a quest"); p.primary:Disable(); p.primary:SetScript("OnClick",function() end)
+  elseif selected.kind=="quest" then
+    local q=selected.data; local reward=self.db.items[q.rewardID]; local rewardText=reward and ("Reward: "..reward.name.." x"..q.rewardCount) or "Reward data unavailable"
+    p.selectedQuestID=q.id; p.deleteQuest:Show(); p.deleteQuest:SetText(p.deleteArmed==q.id and "Confirm delete" or "Delete quest")
+    local lines={q.description,"","Status: YOUR QUEST - this is a definition you created.","Enter a recipient below, then use Share quest.","Steps: "..self.Count(q.steps),rewardText,"Quest ID: "..q.id}
+    if q.predecessorQuestID then lines[self.Count(lines)+1]="Predecessor: "..q.predecessorQuestID end
+    if q.followUpQuestID then lines[self.Count(lines)+1]="Follow-up: "..q.followUpQuestID end
+    if q.turnInNPCID then lines[self.Count(lines)+1]="Reward turn-in NPC ID: "..q.turnInNPCID end
+    p.detailTitle:SetText(q.title); p.detail:SetText(table.concat(lines,"\n"))
+    p.shareTarget:Show(); p.shareTarget.label:Show()
+    p.primary:SetText("Edit quest"); p.primary:SetScript("OnClick",function() QW:OpenQuestForSharing(q.id) end)
+    p.resend:SetText("Share quest"); p.resend:Show(); p.resend:SetScript("OnClick",function()
+      local ok,message=QW:ShareQuest(q.id,p.shareTarget:GetText())
+      QW:Status(p,message or (ok and "Quest shared with "..p.shareTarget:GetText().."."))
+    end)
+  elseif selected.kind=="offer" then
+    local o=selected.data; local lines={o.description,"","Status: NPC QUEST OFFER"}
+    if o.giverDialogue and o.giverDialogue~="" then lines[self.Count(lines)+1]="Dialogue: \""..o.giverDialogue.."\"" end
+    if o.giverNPCID then lines[self.Count(lines)+1]="Quest giver NPC ID: "..o.giverNPCID end
+    if o.turnInNPCID then lines[self.Count(lines)+1]="Reward turn-in NPC ID: "..o.turnInNPCID end
+    lines[self.Count(lines)+1]="Target the quest giver (NPC proximity is checked by the game), then accept this offer."
+    p.detailTitle:SetText(o.title); p.detail:SetText(table.concat(lines,"\n"))
+    p.primary:SetText("Talk / accept quest"); p.primary:SetScript("OnClick",function()
+      local ok,message=QW:AcceptQuestOffer(o.id); QW:Status(p,message or (ok and "Quest accepted.")); QW:RefreshQuestJournal()
+    end)
+  else
+    local r=selected.data; local step=r.steps[r.index]; local objectiveIndex,objectiveTotal=self:GetQuestStepProgress(r); local lines={r.description,"","Status: "..r.state,"Progress: "..objectiveIndex.." / "..objectiveTotal}
+    if step then
+      lines[self.Count(lines)+1]="Objective: "..step.text
+      local place=r.placeByID and r.placeByID[step.placeID]
+      if place then local location="Location: "..place.zone; if place.x then location=location.." - "..place.x..", "..place.y.." (radius "..place.radius..")" end; lines[self.Count(lines)+1]=location end
+      if step.npcID then lines[self.Count(lines)+1]="Target NPC ID: "..step.npcID elseif step.mobName and step.mobName~="" then lines[self.Count(lines)+1]="Target: "..step.mobName end
+      if step.type=="kill" then lines[self.Count(lines)+1]="Kills: "..math.min((r.killProgress and r.killProgress[r.index]) or 0,step.count).." / "..step.count end
+      if step.itemID and step.itemID~="" then lines[self.Count(lines)+1]="RP item: "..step.itemID.." x"..(step.count or 1) end
+    else lines[self.Count(lines)+1]="All objectives complete." end
+    if r.pendingDelivery then lines[self.Count(lines)+1]="Delivery acknowledgement pending - use Resend delivery if needed." end
+    if r.turnInNPCID then lines[self.Count(lines)+1]="Reward turn-in NPC ID: "..r.turnInNPCID end
+    if r.reward then lines[self.Count(lines)+1]="Reward: "..r.reward.name.." x"..r.rewardCount end
+    if r.followUpQuestID then lines[self.Count(lines)+1]="Follow-up on completion: "..r.followUpQuestID end
+    p.detailTitle:SetText(r.title); p.detail:SetText(table.concat(lines,"\n"))
+    if r.state=="active" then
+      if step and step.type=="collect" then p.primary:SetText("Collect item here")
+      elseif step and step.type=="dialogue" and step.mobName and step.mobName~="" then p.primary:SetText("Talk / interact with NPC")
+      else p.primary:SetText("Progress objective") end
+      p.primary:SetScript("OnClick",function()
+        local ok,message
+        if step and step.type=="dialogue" and step.mobName and step.mobName~="" then ok,message=QW:InteractWithTarget()
+        else ok,message=QW:AdvanceQuest(r.id) end
+        QW:Status(p,message or (ok and "Objective advanced.")); QW:RefreshQuestJournal()
+      end)
+    elseif r.state=="ready_to_turn_in" then
+      p.primary:SetText("Talk / receive reward"); p.primary:SetScript("OnClick",function()
+        local ok,message=QW:InteractWithTarget(); QW:Status(p,message or (ok and "Quest reward received.")); QW:RefreshQuestJournal()
+      end)
+    elseif r.state=="complete" then
+      p.primary:SetText("Quest completed"); p.primary:Disable(); p.primary:SetScript("OnClick",function() end)
+    else
+      p.primary:SetText("Awaiting approval"); p.primary:Disable(); p.primary:SetScript("OnClick",function() end)
+    end
+    if r.pendingDelivery then
+      p.resend:SetText("Resend delivery"); p.resend:Show(); p.resend:SetScript("OnClick",function()
+        local ok=QW:ResendDelivery(r.id); QW:Status(p,ok and "Delivery resent." or "This quest has no pending delivery.")
+      end)
+    end
+  end
+  local inbox={"RECENT REQUESTS:"}; local start=math.max(1,self.Count(self.db.inbox)-2)
+  for i=start,self.Count(self.db.inbox) do inbox[self.Count(inbox)+1]=self.db.inbox[i] end
+  p.inbox:SetText(table.concat(inbox,"\n"))
+end
+function QW:BuildSetPage(p)
+  p.heading=p:CreateFontString(nil,"OVERLAY","GameFontHighlight"); p.heading:SetPoint("TOPLEFT",8,-8); p.heading:SetText("Questweaver Sets - authored RP questlines and stories")
+  p.setButtons={}; local i
+  for i=1,8 do
+    local entry=button(p,"",8,-32-(i-1)*34,245,function(self) p.selectedSetID=self.setID; QW:RefreshSetPage() end)
+    entry.setID=nil; entry:Hide(); p.setButtons[QW.Count(p.setButtons)+1]=entry
+  end
+  p.empty=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.empty:SetPoint("TOPLEFT",8,-35); p.empty:SetWidth(245); p.empty:SetJustifyH("LEFT")
+  p.detailTitle=p:CreateFontString(nil,"OVERLAY","GameFontHighlight"); p.detailTitle:SetPoint("TOPLEFT",275,-32); p.detailTitle:SetWidth(300); p.detailTitle:SetJustifyH("LEFT")
+  p.detail=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.detail:SetPoint("TOPLEFT",275,-62); p.detail:SetWidth(300); p.detail:SetJustifyH("LEFT")
+  p.primary=button(p,"Create Questweaver Set",275,-270,175,function() QW.setCreator:Show(); QW.setCreator:Raise() end)
+  p.edit=button(p,"Edit set",460,-270,95,function() end); p.edit:Hide()
+  p.delete=button(p,"Delete set",460,-300,95,function()
+    local id=p.selectedSetID; if not id then return end
+    if p.deleteArmed~=id then p.deleteArmed=id; p.delete:SetText("Confirm"); QW:Status(p,"Click again to delete this Set; its quests/items are unchanged."); return end
+    local ok,message=QW:DeleteSet(id); p.deleteArmed=nil; QW:Status(p,message); if ok then p.selectedSetID=nil end; QW:RefreshSetPage()
+  end); p.delete:Hide()
+  p.status=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.status:SetPoint("TOPLEFT",8,-335); p.status:SetWidth(570); p.status:SetJustifyH("LEFT")
+end
+function QW:OpenSetEditor(id)
+  local set=self.db.sets[id]; local f=self.setCreator
+  if not set or not f then return false end
+  f.sid:SetText(set.id); f.stitle:SetText(set.title); f.sdesc:SetText(set.description); f.squests:SetText(table.concat(set.questIDs or {},",")); f.sitems:SetText(table.concat(set.itemIDs or {},",")); f:Show(); f:Raise(); return true
+end
+function QW:RefreshSetPage()
+  if not self.ui then return end
+  local p=self.ui.pages[5]; local entries={}; local id,set
+  for id,set in pairs(self.db.sets) do entries[self.Count(entries)+1]=set end
+  table.sort(entries,function(a,b) return a.title<b.title end)
+  local selected=self.db.sets[p.selectedSetID]
+  if not selected and entries[1] then selected=entries[1]; p.selectedSetID=selected.id end
+  local i
+  for i=1,self.Count(p.setButtons) do
+    local entry=p.setButtons[i]; local data=entries[i]
+    if data then entry.setID=data.id; entry:SetText("[SET] "..string.sub(data.title,1,29)); entry:Show() else entry.setID=nil; entry:Hide() end
+  end
+  p.empty:SetText(self.Count(entries)==0 and "No Questweaver Sets yet. Create one to organize your story." or "")
+  if not selected then
+    p.detailTitle:SetText("Select a Questweaver Set"); p.detail:SetText("A Set keeps an ordered questline and supporting RP items together."); p.edit:Hide(); p.delete:Hide()
+  else
+    p.detailTitle:SetText(selected.title); p.detail:SetText(table.concat(self:GetSetLines(selected),"\n")); p.edit:Show(); p.delete:Show(); p.delete:SetText(p.deleteArmed==selected.id and "Confirm" or "Delete set"); p.edit:SetScript("OnClick",function() QW:OpenSetEditor(selected.id) end)
+  end
+end
+function QW:BuildCreatePage(p)
+  p.help=p:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); p.help:SetPoint("TOPLEFT",20,-35); p.help:SetWidth(520); p.help:SetJustifyH("LEFT"); p.help:SetText("Create items and quests in focused windows. Item creation includes a visual icon picker; quest creation has its own workspace.")
+  button(p,"Create RP item",25,-90,210,function() QW.itemCreator:Show(); QW.itemCreator:Raise() end)
+  button(p,"Create quest",250,-90,210,function() QW:OpenNewQuestCreator() end)
+  button(p,"Create Questweaver Set",25,-180,210,function() QW.setCreator:Show(); QW.setCreator:Raise() end)
+  button(p,"Create sealed-letter demo",25,-135,210,function()
+    local letter,quest=QW:CreateDemo()
+    if quest then local ok,message=QW:AssignQuestToCurrentPlayer(quest); QW:Status(p,message or (ok and "Demo quest assigned.")); QW:ShowActiveQuests() else QW:Status(p,"Could not create the demo.") end
+  end)
+  button(p,"Create Aldrassil boar demo",250,-135,210,function()
+    local quest=QW:CreateBoarDemo()
+    if quest then local ok,message=QW:AssignQuestToCurrentPlayer(quest); QW:Status(p,message or (ok and "Boar demo quest assigned.")); QW:ShowActiveQuests() else QW:Status(p,"Could not create the boar demo.") end
+  end)
+  p.status=p:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); p.status:SetPoint("TOPLEFT",25,-220); p.status:SetWidth(540); p.status:SetJustifyH("LEFT")
+end
+function QW:NewCreatorWindow(name,title,width,height)
+  local f=CreateFrame("Frame",name,UIParent,"UIPanelDialogTemplate"); f:SetWidth(width); f:SetHeight(height); f:SetPoint("CENTER"); f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton"); f:SetScript("OnDragStart",f.StartMoving); f:SetScript("OnDragStop",f.StopMovingOrSizing); f:Hide()
+  f.title=f:CreateFontString(nil,"OVERLAY","GameFontHighlight"); f.title:SetPoint("TOP",0,-12); f.title:SetText(title)
+  button(f,"Close",width-82,-32,65,function() f:Hide() end)
+  return f
+end
+function QW:UpdateItemIconPreview(f)
+  local icon=self:NormalizeIcon(f.iconPath:GetText())
+  if not self:ValidateIcon(icon) then icon="Interface\\Icons\\INV_Misc_QuestionMark" end
+  f.preview:SetTexture(icon)
+end
+function QW:CreateItemCreator()
+  local f=self:NewCreatorWindow("QuestweaverItemCreatorFrame","Create RP item",500,365); self.itemCreator=f
+  f.previewBorder=f:CreateTexture(nil,"BACKGROUND"); f.previewBorder:SetPoint("TOPLEFT",25,-58); f.previewBorder:SetWidth(84); f.previewBorder:SetHeight(84); f.previewBorder:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+  f.preview=f:CreateTexture(nil,"ARTWORK"); f.preview:SetPoint("TOPLEFT",f.previewBorder,"TOPLEFT",8,-8); f.preview:SetPoint("BOTTOMRIGHT",f.previewBorder,"BOTTOMRIGHT",-8,8); f.preview:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+  f.name=text(f,"Item name",130,-62,320); f.iconPath=text(f,"Selected icon path (or choose Browse icons)",130,-108,240); f.iconPath:SetScript("OnTextChanged",function() QW:UpdateItemIconPreview(f) end)
+  button(f,"Browse icons",380,-111,90,function() QW:ShowIconPicker(f) end)
+  f.desc=text(f,"Description",25,-185,440); f.stack=text(f,"Max stack size",25,-230,80); f.stack:SetText("1"); f.category="misc"
+  f.categoryButton=button(f,"Category: misc",135,-230,130,function()
+    f.categoryIndex=(f.categoryIndex or 3)%QW.Count(QW.ITEM_CATEGORIES)+1; f.category=QW.ITEM_CATEGORIES[f.categoryIndex]; f.categoryButton:SetText("Category: "..f.category)
+  end); f.categoryIndex=3
+  f.categoryHelp=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.categoryHelp:SetPoint("TOPLEFT",275,-230); f.categoryHelp:SetWidth(195); f.categoryHelp:SetText("Quest/reward items enter via quests only.")
+  button(f,"Create item",25,-280,120,function()
+    local id,message=QW:CreateItem(f.name:GetText(),QW:NormalizeIcon(f.iconPath:GetText()),f.desc:GetText(),f.stack:GetText(),f.category)
+    QW:Status(f,message or ("Created: "..id)); if id then QW:RefreshUI() end
+  end)
+  f.status=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.status:SetPoint("TOPLEFT",155,-283); f.status:SetWidth(310); f.status:SetJustifyH("LEFT")
+end
+function QW:CreateQuestCreator()
+  local f=self:NewCreatorWindow("QuestweaverQuestCreatorFrame","Create and share quest",620,770); self.questCreator=f
+  f.qtitle=text(f,"Quest title",18,-62,205); f.qdesc=text(f,"Quest description",235,-62,300); f.reward=text(f,"Reward item ID (default token is item:questweaver:rp-token)",18,-108,205)
+  f.steps=text(f,"Objective sequence (generated; advanced editing only)",235,-108,360)
+  f.places=text(f,"Real locations: placeId~zone~x~y~radius~description ; ...",18,-154,570)
+  f.questItems=text(f,"Additional quest item IDs (comma separated)",18,-200,570)
+  local function browseOnRightClick(field,kind,mode)
+    field:SetScript("OnMouseDown",function(_,mouseButton)
+      mouseButton=mouseButton or arg1
+      if mouseButton=="RightButton" then QW:ShowReferencePicker(kind,field,mode) end
+    end)
+  end
+  browseOnRightClick(f.reward,"item","replace"); browseOnRightClick(f.questItems,"item","append")
+  local objectiveTypes={"kill","collect","dialogue","deliver","possess","visit"}; f.objectiveTypeIndex=1
+  f.objectiveType=button(f,"Type: kill",18,-249,110,function()
+    f.objectiveTypeIndex=f.objectiveTypeIndex%QW.Count(objectiveTypes)+1
+    local kind=objectiveTypes[f.objectiveTypeIndex]; f.objectiveType:SetText("Type: "..kind)
+    f.objectiveItem:SetText(""); f.objectivePlace:SetText(""); f.targetSpec:SetText("")
+    f.objectiveCount:SetText((kind=="kill" or kind=="collect" or kind=="deliver" or kind=="possess") and "1" or "")
+    if kind=="kill" then f.objectiveText:SetText("Defeat the targeted NPC.")
+    elseif kind=="collect" then f.objectiveText:SetText("Collect the item at this location.")
+    elseif kind=="dialogue" then f.objectiveText:SetText("Speak to the targeted NPC at this location.")
+    elseif kind=="deliver" then f.objectiveText:SetText("Deliver the item to the quest owner.")
+    elseif kind=="possess" then f.objectiveText:SetText("Carry the required RP item.")
+    else f.objectiveText:SetText("Visit this location.") end
+  end)
+  f.objectiveText=text(f,"Objective text",140,-246,450); f.objectiveText:SetText("Defeat the targeted NPC.")
+  f.objectiveItem=text(f,"RP item ID (collect / deliver / possess)",18,-292,235)
+  browseOnRightClick(f.objectiveItem,"item","replace")
+  f.objectiveCount=text(f,"Count",265,-292,60); f.objectiveCount:SetText("1")
+  f.objectivePlace=text(f,"Place ID (required for collect / visit)",340,-292,250)
+  f.targetSpec=text(f,"Target NPC ID (required for kill; optional dialogue / deliver)",18,-338,230)
+  button(f,"Use targeted NPC",260,-341,145,function()
+    local npcID,npcName=QW:GetTargetNPCInfo()
+    if not npcID then QW:Status(f,npcName); return end
+    f.targetSpec:SetText("npc:"..npcID); QW:Status(f,"Selected NPC "..npcID.." ("..npcName..").")
+  end)
+  local function updateObjectiveSummary()
+    local steps=QW:ParseSteps(f.steps:GetText()); if not steps then f.objectiveSummary:SetText("Objectives: add them with the fields above, in the order they should happen."); return end
+    local lines={"Objectives ("..QW.Count(steps).."):"}; local i; for i=1,math.min(3,QW.Count(steps)) do lines[QW.Count(lines)+1]=i..". "..steps[i].type.." - "..steps[i].text end
+    if QW.Count(steps)>3 then lines[QW.Count(lines)+1]="... plus "..(QW.Count(steps)-3).." more" end; f.objectiveSummary:SetText(table.concat(lines,"\n"))
+  end
+  button(f,"Add objective",420,-341,170,function()
+    local kind=objectiveTypes[f.objectiveTypeIndex]; local objective=f.objectiveText:GetText(); local itemID=f.objectiveItem:GetText(); local count=tonumber(f.objectiveCount:GetText()); local placeID=f.objectivePlace:GetText(); local target=f.targetSpec:GetText()
+    local function clean(value,allowEmpty) return (allowEmpty and value=="") or (QW:ValidateString(value,300) and not string.find(value,"[;~]")) end
+    if not clean(objective,false) or not clean(itemID,true) or not clean(placeID,true) or not clean(target,true) then QW:Status(f,"Objective fields cannot be blank where required or contain ; or ~."); return end
+    local existing=f.steps:GetText(); local existingSteps=existing~="" and QW:ParseSteps(existing) or {}
+    if not existingSteps then QW:Status(f,"Fix the objective sequence before adding another objective."); return end
+    if QW.Count(existingSteps)>=12 then QW:Status(f,"A quest can have at most 12 objectives."); return end
+    if (kind=="kill" or kind=="collect" or kind=="deliver" or kind=="possess") and (not count or count<1 or count>999) then QW:Status(f,"This objective needs a count from 1-999."); return end
+    if (kind=="collect" or kind=="deliver" or kind=="possess") and not QW:ValidateString(itemID,120) then QW:Status(f,"This objective needs an RP item ID."); return end
+    if (kind=="collect" or kind=="visit") and not QW:ValidateString(placeID,80) then QW:Status(f,"This objective needs a defined place ID."); return end
+    if kind=="kill" and not string.match(target,"^npc:%d+$") then QW:Status(f,"Target an NPC, then use Use targeted NPC before adding a kill objective."); return end
+    if target~="" and not string.match(target,"^npc:%d+$") then QW:Status(f,"Use Targeted NPC to set an NPC ID, or leave the target field empty."); return end
+    if kind=="kill" or kind=="dialogue" or kind=="visit" then itemID="" end
+    if kind=="dialogue" or kind=="visit" then count="" end
+    if kind~="kill" and kind~="dialogue" and kind~="deliver" then target="" end
+    local step=kind.."~"..itemID.."~"..(count or "").."~"..placeID.."~"..target.."~"..objective
+    f.steps:SetText(existing~="" and (existing..";"..step) or step); updateObjectiveSummary(); QW:Status(f,"Added "..kind.." objective.")
+  end)
+  f.objectiveSummary=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.objectiveSummary:SetPoint("TOPLEFT",18,-375); f.objectiveSummary:SetWidth(570); f.objectiveSummary:SetJustifyH("LEFT"); updateObjectiveSummary(); f.steps:SetScript("OnTextChanged",updateObjectiveSummary)
+  button(f,"Remove last",18,-414,105,function()
+    local steps=f.steps:GetText(); local cut=string.match(steps,"^(.*);[^;]*$")
+    if cut then f.steps:SetText(cut) elseif steps~="" then f.steps:SetText("") else QW:Status(f,"There are no objectives to remove."); return end
+    QW:Status(f,"Removed the last objective.")
+  end)
+  button(f,"Clear objectives",132,-414,125,function() f.steps:SetText(""); QW:Status(f,"Cleared the objective sequence.") end)
+  f.followUp=text(f,"Follow-up quest ID (optional)",270,-414,320)
+  f.predecessor=text(f,"Predecessor quest ID (optional; links it automatically)",18,-457,265)
+  browseOnRightClick(f.followUp,"quest","replace"); browseOnRightClick(f.predecessor,"quest","replace")
+  f.giverTarget=text(f,"Quest giver NPC ID (optional)",300,-457,180)
+  button(f,"Use NPC",490,-460,100,function()
+    local npcID,npcName=QW:GetTargetNPCInfo()
+    if not npcID then QW:Status(f,npcName); return end
+    f.giverTarget:SetText("npc:"..npcID); QW:Status(f,"Quest giver set to "..npcName.." (NPC "..npcID..").")
+  end)
+  f.qid=text(f,"Quest ID",18,-503,240); f.qtarget=text(f,"Recipient",270,-503,180)
+  f.giverDialogue=text(f,"Quest giver dialogue (required for NPC offer)",18,-549,570)
+  f.turnInTarget=text(f,"Reward turn-in NPC ID (optional)",18,-595,220)
+  button(f,"Use giver",245,-598,100,function()
+    local giver=f.giverTarget:GetText()
+    if not string.match(giver or "","^npc:%d+$") then QW:Status(f,"Set a quest giver NPC first, or enter the turn-in NPC ID."); return end
+    f.turnInTarget:SetText(giver); QW:Status(f,"Reward will be granted by the quest giver.")
+  end)
+  button(f,"Use target",355,-598,100,function()
+    local npcID,npcName=QW:GetTargetNPCInfo()
+    if not npcID then QW:Status(f,npcName); return end
+    f.turnInTarget:SetText("npc:"..npcID); QW:Status(f,"Reward will be granted by "..npcName.." (NPC "..npcID..").")
+  end)
+  f.createButton=button(f,"Create quest",18,-595,120,function()
+    local steps=QW:ParseSteps(f.steps:GetText()); local places=QW:ParsePlaces(f.places:GetText()); local ids=QW:ParseItemIDs(f.questItems:GetText())
+    local wasEditing=f.editingID~=nil
+    local id,message=QW:CreateQuest(f.qtitle:GetText(),f.qdesc:GetText(),steps or {},f.reward:GetText(),f.rewardCountValue or 1,places or {},ids or {},f.followUp:GetText(),f.predecessor:GetText(),f.giverTarget:GetText(),f.giverPlaceIDValue or "",f.giverDialogue:GetText(),f.turnInTarget:GetText(),f.editingID)
+    if id then f.qid:SetText(id); if wasEditing then f.createButton:SetText("Save changes") end end; QW:Status(f,message or ((wasEditing and "Updated quest: " or "Created quest: ")..id)); QW:RefreshUI()
+  end)
+  f.createButton:ClearAllPoints(); f.createButton:SetPoint("TOPLEFT",f,"TOPLEFT",18,-641)
+  button(f,"Share active",150,-641,105,function() local ok,message=QW:ShareQuest(f.qid:GetText(),f.qtarget:GetText()); QW:Status(f,message or (ok and "Quest shared.")) end)
+  button(f,"Send NPC offer",265,-641,130,function() local ok,message=QW:OfferQuest(f.qid:GetText(),f.qtarget:GetText()); QW:Status(f,message or (ok and "NPC quest offer sent.")) end)
+  f.hint=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.hint:SetPoint("TOPLEFT",18,-686); f.hint:SetWidth(560); f.hint:SetJustifyH("LEFT"); f.hint:SetText("NPC interactions check the selected NPC ID; proximity is handled by the game. Turn-in NPC: use giver to require returning to the quest giver, or enter another NPC ID. Target that NPC and use /qw interact after the final objective. Right-click Item/Quest ID fields to browse choices.")
+  f.status=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.status:SetPoint("TOPLEFT",18,-726); f.status:SetWidth(560); f.status:SetJustifyH("LEFT")
+end
+function QW:OpenNewQuestCreator()
+  local f=self.questCreator; if not f then return end
+  f.editingID=nil; f.rewardCountValue=1; f.giverPlaceIDValue=""; f.qtitle:SetText(""); f.qdesc:SetText(""); f.reward:SetText(self.DEFAULT_TOKEN_ID); f.steps:SetText(""); f.places:SetText(""); f.questItems:SetText(""); f.followUp:SetText(""); f.predecessor:SetText(""); f.giverTarget:SetText(""); f.giverDialogue:SetText(""); f.turnInTarget:SetText(""); f.qid:SetText(""); f.qtarget:SetText(""); f.createButton:SetText("Create quest")
+  f:Show(); f:Raise(); f.qtitle:SetFocus()
+end
+function QW:CreateSetCreator()
+  local f=self:NewCreatorWindow("QuestweaverSetCreatorFrame","Create Questweaver Set",600,475); self.setCreator=f
+  f.sid=text(f,"Set ID (leave empty for a new set)",18,-62,560)
+  f.stitle=text(f,"Set title",18,-108,250); f.sdesc=text(f,"Story description",285,-108,290)
+  f.squests=text(f,"Quest chapter IDs, in story order (comma separated)",18,-154,560)
+  button(f,"Choose quest chapters",18,-180,160,function() QW:ShowReferencePicker("quest",f.squests,"append") end)
+  f.sitems=text(f,"Supporting RP item IDs (comma separated)",18,-220,560)
+  button(f,"Choose supporting items",18,-246,170,function() QW:ShowReferencePicker("item",f.sitems,"append") end)
+  f.help=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.help:SetPoint("TOPLEFT",18,-282); f.help:SetWidth(550); f.help:SetJustifyH("LEFT"); f.help:SetText("Choose chapters and items from the browser. A Set references their stable IDs without duplicating them, so its chapter order describes your RP story.")
+  button(f,"Save Questweaver Set",18,-350,170,function()
+    local quests=QW:ParseSetQuestIDs(f.squests:GetText()); local items=QW:ParseItemIDs(f.sitems:GetText())
+    if not quests or not items then QW:Status(f,"Use unique, comma-separated quest and item IDs."); return end
+    local id,message=QW:SaveSet(f.sid:GetText(),f.stitle:GetText(),f.sdesc:GetText(),quests,items)
+    if id then f.sid:SetText(id) end; QW:Status(f,message or ("Saved Questweaver Set: "..id)); QW:RefreshUI()
+  end)
+  f.status=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.status:SetPoint("TOPLEFT",205,-353); f.status:SetWidth(360); f.status:SetJustifyH("LEFT")
+end
+function QW:CreateReferencePicker()
+  local f=self:NewCreatorWindow("QuestweaverReferencePickerFrame","Choose a Questweaver reference",560,430); self.referencePicker=f; f.entries={}; f.page=1
+  f.caption=f:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); f.caption:SetPoint("TOPLEFT",18,-58); f.caption:SetWidth(510); f.caption:SetJustifyH("LEFT")
+  local i
+  for i=1,10 do
+    local entry=button(f,"",18,-82-(i-1)*28,510,function(self)
+      if not self.referenceID or not f.target then return end
+      local current=f.target:GetText()
+      if f.mode=="append" and current~="" then
+        local exists=false; for value in string.gmatch(current,"[^,]+") do if value==self.referenceID then exists=true end end
+        if not exists then f.target:SetText(current..","..self.referenceID) end
+      else f.target:SetText(self.referenceID) end
+      f:Hide()
+    end)
+    entry.referenceID=nil; f.entries[QW.Count(f.entries)+1]=entry
+  end
+  button(f,"Previous",18,-375,85,function() if f.page>1 then f.page=f.page-1; QW:RefreshReferencePicker() end end)
+  button(f,"Next",112,-375,85,function() if f.page<(math.ceil(QW.Count(f.references or {})/QW.Count(f.entries))) then f.page=f.page+1; QW:RefreshReferencePicker() end end)
+end
+function QW:ShowReferencePicker(kind,target,mode)
+  local f=self.referencePicker; if not f or not target then return end
+  f.kind=kind; f.target=target; f.mode=mode or "replace"; f.references={}
+  local id,value
+  if kind=="item" then
+    for id,value in pairs(self.db.items) do f.references[self.Count(f.references)+1]={id=id,label=value.name.."  ["..id.."]"} end
+  else
+    for id,value in pairs(self.db.quests) do f.references[self.Count(f.references)+1]={id=id,label=value.title.."  ["..id.."]"} end
+  end
+  table.sort(f.references,function(a,b) return a.label<b.label end); f.page=1; self:RefreshReferencePicker(); f:Show(); f:Raise()
+end
+function QW:RefreshReferencePicker()
+  local f=self.referencePicker; if not f then return end
+  local start=(f.page-1)*QW.Count(f.entries); local i
+  for i=1,QW.Count(f.entries) do
+    local entry=f.entries[i]; local reference=f.references[start+i]
+    if reference then entry.referenceID=reference.id; entry:SetText(reference.label); entry:Show() else entry.referenceID=nil; entry:Hide() end
+  end
+  local total=QW.Count(f.references); local pages=math.max(1,math.ceil(total/QW.Count(f.entries)))
+  f.caption:SetText((f.kind=="item" and "Choose an RP item" or "Choose an authored quest").." - page "..f.page.." of "..pages..". Click to "..(f.mode=="append" and "add it" or "use it")..".")
+end
+function QW:CreateIconPicker()
+  local f=self:NewCreatorWindow("QuestweaverIconPickerFrame","Choose an item icon",540,425); self.iconPicker=f; f.slots={}; f.page=1
+  local i
+  for i=1,48 do
+    local slot=CreateFrame("Button",nil,f); slot:SetWidth(42); slot:SetHeight(42); local column=(i-1)%12; local row=math.floor((i-1)/12); slot:SetPoint("TOPLEFT",18+column*42,-62-row*52)
+    slot.border=slot:CreateTexture(nil,"BACKGROUND"); slot.border:SetAllPoints(slot); slot.border:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+    slot.icon=slot:CreateTexture(nil,"ARTWORK"); slot.icon:SetPoint("TOPLEFT",slot,"TOPLEFT",4,-4); slot.icon:SetPoint("BOTTOMRIGHT",slot,"BOTTOMRIGHT",-4,4)
+    slot:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+    slot:SetScript("OnClick",function(self)
+      if not self.iconValue or not f.target then return end
+      f.target.iconPath:SetText(tostring(self.iconValue)); QW:UpdateItemIconPreview(f.target); f:Hide()
+    end)
+    slot:SetScript("OnEnter",function(self) if self.iconValue then GameTooltip:SetOwner(self,"ANCHOR_RIGHT"); GameTooltip:SetText(tostring(self.iconValue)); GameTooltip:Show() end end)
+    slot:SetScript("OnLeave",function() GameTooltip:Hide() end)
+    f.slots[QW.Count(f.slots)+1]=slot
+  end
+  button(f,"Previous",18,-325,85,function() if f.page>1 then f.page=f.page-1; QW:RefreshIconPicker() end end)
+  button(f,"Next",112,-325,85,function() if f.page<(math.ceil(QW.Count(f.icons or {})/QW.Count(f.slots))) then f.page=f.page+1; QW:RefreshIconPicker() end end)
+  f.caption=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.caption:SetPoint("TOPLEFT",215,-328); f.caption:SetWidth(250); f.caption:SetJustifyH("LEFT")
+end
+function QW:ShowIconPicker(target)
+  local f=self.iconPicker; f.target=target; f.icons=self:GetIconLibrary(); f.page=1; self:RefreshIconPicker(); f:Show(); f:Raise()
+end
+function QW:RefreshIconPicker()
+  local f=self.iconPicker; local start=(f.page-1)*QW.Count(f.slots)
+  local i
+  for i=1,QW.Count(f.slots) do
+    local slot=f.slots[i]; local icon=f.icons[start+i]
+    if icon then slot.iconValue=icon; slot.icon:SetTexture(icon); slot:Show() else slot.iconValue=nil; slot.icon:SetTexture(nil); slot:Hide() end
+  end
+  local pages=math.max(1,math.ceil(QW.Count(f.icons)/QW.Count(f.slots))); f.caption:SetText("Page "..f.page.." of "..pages.." - "..QW.Count(f.icons).." icons")
+end
+function QW:CreateTradeOfferSlot(parent,title,x,y)
+  local slot=CreateFrame("Button",nil,parent); slot:SetWidth(210); slot:SetHeight(170); slot:SetPoint("TOPLEFT",x,y)
+  slot.border=slot:CreateTexture(nil,"BACKGROUND"); slot.border:SetAllPoints(slot); slot.border:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Background")
+  slot.title=slot:CreateFontString(nil,"OVERLAY","GameFontHighlight"); slot.title:SetPoint("TOP",0,-10); slot.title:SetText(title)
+  slot.icon=slot:CreateTexture(nil,"ARTWORK"); slot.icon:SetWidth(84); slot.icon:SetHeight(84); slot.icon:SetPoint("TOP",0,-35)
+  slot.count=slot:CreateFontString(nil,"OVERLAY","NumberFontNormalLarge"); slot.count:SetPoint("BOTTOMRIGHT",slot.icon,"BOTTOMRIGHT",0,2)
+  slot.name=slot:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); slot.name:SetPoint("TOP",slot.icon,"BOTTOM",0,-10); slot.name:SetWidth(190)
+  slot:SetScript("OnEnter",function(self) if self.item then GameTooltip:SetOwner(self,"ANCHOR_RIGHT"); GameTooltip:SetText(self.item.name); GameTooltip:AddLine(self.item.description,1,1,1,true); GameTooltip:AddLine("RP quantity: "..self.quantity,.8,.8,.8); GameTooltip:Show() end end)
+  slot:SetScript("OnLeave",function() GameTooltip:Hide() end)
+  return slot
+end
+function QW:SetTradeOfferSlot(slot,item,quantity)
+  slot.item=item; slot.quantity=quantity
+  if item then slot.icon:SetTexture(item.icon or "Interface\\Icons\\INV_Misc_QuestionMark"); slot.count:SetText(quantity); slot.name:SetText(item.name) else slot.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark"); slot.count:SetText(""); slot.name:SetText("Empty") end
+end
+function QW:CreateTradeWindow()
+  local f=self:NewCreatorWindow("QuestweaverTradeFrame","Questweaver RP Trade",650,500); self.tradeWindow=f; f.inventorySlots={}
+  f.target=text(f,"Trading with (character name)",22,-60,230); f.tradeID=text(f,"Trade ID (load an offer)",355,-60,210)
+  button(f,"Load",575,-63,50,function() f.activeTradeID=f.tradeID:GetText(); QW:RefreshTradeWindow() end)
+  f.yourSlot=self:CreateTradeOfferSlot(f,"Your offer",45,-110); f.theirSlot=self:CreateTradeOfferSlot(f,"Their offer",390,-110)
+  f.arrow=f:CreateFontString(nil,"OVERLAY","GameFontHighlightLarge"); f.arrow:SetPoint("TOP",0,-175); f.arrow:SetText("<--->")
+  f.selection=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.selection:SetPoint("TOPLEFT",22,-305); f.selection:SetWidth(590); f.selection:SetJustifyH("LEFT"); f.selection:SetText("Select an item below, then set quantity and offer it.")
+  f.quantity=text(f,"Offer quantity",22,-345,70); f.quantity:SetText("1")
+  button(f,"Offer / update",105,-348,120,function()
+    if not f.selectedItem then QW:Status(f,"Select an item from your RP inventory first."); return end
+    local trade=QW:GetTradeWindowTrade()
+    local ok,message
+    if trade and not trade.incoming and trade.state=="offered" then
+      ok,message=QW:UpdateTrade(trade.id,f.selectedItem.id,f.quantity:GetText()); if ok then f.activeTradeID=trade.id end
+    else
+      local id; id,message=QW:StartTrade(f.target:GetText(),f.selectedItem.id,f.quantity:GetText()); ok=id~=nil; if ok then f.activeTradeID=id; f.tradeID:SetText(id) end
+    end
+    QW:Status(f,ok and "Offer sent. Both players must confirm." or message); QW:RefreshTradeWindow()
+  end)
+  button(f,"Confirm",240,-348,85,function()
+    local trade=QW:GetTradeWindowTrade(); local ok,message
+    if trade then ok,message=QW:ConfirmTrade(trade.id) else ok,message=false,"Load a trade first." end
+    QW:Status(f,message or (ok and "Confirmation sent.")); QW:RefreshTradeWindow()
+  end)
+  button(f,"Cancel",335,-348,75,function() local trade=QW:GetTradeWindowTrade(); local ok=trade and QW:CancelTrade(trade.id); QW:Status(f,ok and "Trade cancelled." or "Committed or completed trades cannot be cancelled."); QW:RefreshTradeWindow() end)
+  button(f,"Resend",420,-348,75,function() local trade=QW:GetTradeWindowTrade(); local ok=trade and QW:ResendTrade(trade.id); QW:Status(f,ok and "Commit resent." or "Only an unresolved outgoing commit can be resent.") end)
+  f.status=f:CreateFontString(nil,"OVERLAY","GameFontNormalSmall"); f.status:SetPoint("TOPLEFT",22,-385); f.status:SetWidth(590); f.status:SetJustifyH("LEFT")
+  f.inventoryLabel=f:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall"); f.inventoryLabel:SetPoint("TOPLEFT",22,-415); f.inventoryLabel:SetText("Your RP inventory (click an item to add it to your offer)")
+  local i
+  for i=1,10 do
+    local slot=CreateFrame("Button",nil,f); slot:SetWidth(46); slot:SetHeight(46); slot:SetPoint("TOPLEFT",22+(i-1)*56,-438)
+    slot.border=slot:CreateTexture(nil,"BACKGROUND"); slot.border:SetAllPoints(slot); slot.border:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+    slot.icon=slot:CreateTexture(nil,"ARTWORK"); slot.icon:SetPoint("TOPLEFT",slot,"TOPLEFT",4,-4); slot.icon:SetPoint("BOTTOMRIGHT",slot,"BOTTOMRIGHT",-4,4)
+    slot.count=slot:CreateFontString(nil,"OVERLAY","NumberFontNormalSmall"); slot.count:SetPoint("BOTTOMRIGHT",slot,"BOTTOMRIGHT",-3,3)
+    slot:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+    slot:SetScript("OnEnter",function(self) if self.item then GameTooltip:SetOwner(self,"ANCHOR_RIGHT"); GameTooltip:SetText(self.item.name); GameTooltip:AddLine(self.item.description,1,1,1,true); GameTooltip:AddLine("Available: "..self.quantity,.8,.8,.8); GameTooltip:Show() end end)
+    slot:SetScript("OnLeave",function() GameTooltip:Hide() end)
+    slot:SetScript("OnClick",function(self) if self.item then f.selectedItem=self.item; f.quantity:SetText("1"); QW:Status(f,"Selected "..self.item.name.."."); QW:RefreshTradeWindow() end end)
+    f.inventorySlots[QW.Count(f.inventorySlots)+1]=slot
+  end
+end
+function QW:GetTradeWindowTrade()
+  local f=self.tradeWindow; if not f then return nil end
+  if f.activeTradeID and self.db.trades[f.activeTradeID] then return self.db.trades[f.activeTradeID] end
+  local id=f.tradeID:GetText(); if id~="" and self.db.trades[id] then f.activeTradeID=id; return self.db.trades[id] end
+  local id,trade; for id,trade in pairs(self.db.trades) do if trade.state=="offered" or trade.state=="committed" or trade.state=="unresolved" then f.activeTradeID=id; return trade end end
+  return nil
+end
+function QW:RefreshTradeWindow()
+  local f=self.tradeWindow; if not f then return end
+  local trade=self:GetTradeWindowTrade(); local ours,theirs
+  if trade then
+    f.tradeID:SetText(trade.id); f.target:SetText(trade.target)
+    if trade.incoming then theirs=trade else ours=trade end
+  end
+  local function firstOffer(current)
+    if not current or not current.offer or not current.offer[1] then return nil,nil end
+    local offered=current.offer[1]; local defs=current.incoming and current.definitions or self.db.items
+    return defs and defs[offered.id],offered.count
+  end
+  local item,count=firstOffer(ours); self:SetTradeOfferSlot(f.yourSlot,item,count)
+  item,count=firstOffer(theirs); self:SetTradeOfferSlot(f.theirSlot,item,count)
+  if trade then
+    f.selection:SetText("Trade "..trade.id.." - "..trade.state..". Your confirmation: "..(trade.localConfirmed and "yes" or "no").."; other player's confirmation: "..(trade.remoteConfirmed and "yes" or "no")..".")
+  elseif f.selectedItem then f.selection:SetText("Selected: "..f.selectedItem.name..". Enter a character name and quantity, then offer it.") else f.selection:SetText("Select an item below, then set quantity and offer it.") end
+  local entries={}; for id,quantity in pairs(self.db.inventory) do local invItem=self.db.items[id]; if invItem then entries[self.Count(entries)+1]={item=invItem,quantity=quantity} end end; table.sort(entries,function(a,b) return a.item.name<b.item.name end)
+  local i; for i=1,self.Count(f.inventorySlots) do local slot=f.inventorySlots[i]; local entry=entries[i]; if entry then slot.item=entry.item; slot.quantity=entry.quantity; slot.icon:SetTexture(entry.item.icon or "Interface\\Icons\\INV_Misc_QuestionMark"); slot.count:SetText(entry.quantity); slot:Show() else slot.item=nil; slot.quantity=nil; slot.icon:SetTexture(nil); slot.count:SetText(""); slot:Hide() end end
+end
+function QW:ShowTradeWindow(tradeID)
+  local f=self.tradeWindow; if tradeID then f.activeTradeID=tradeID end; f:Show(); f:Raise(); self:RefreshTradeWindow()
+end
+function QW:RefreshUI()
+  self:RefreshQuickAccessButton()
+  self:RefreshQuestQuickAccessButton()
+  self:RefreshInteractQuickAccessButton()
+  self:RefreshTokenAccessButton()
+  self:RefreshQuestTracker()
+  if not self.ui or not self.ui:IsShown() then return end
+  local inv=self.ui.pages[1]; self:RefreshInventoryGrid(inv); local lines={"TRADES (keep committed/unresolved trades visible until acknowledged):"}; for id,t in pairs(self.db.trades) do lines[QW.Count(lines)+1]=id.." - "..t.state.." - "..t.target end; inv.tradeList:SetText(table.concat(lines,"\n"))
+  self:RefreshMakerInventory()
+  self:RefreshQuestJournal()
+  self:RefreshSetPage()
+  if self.tradeWindow and self.tradeWindow:IsShown() then self:RefreshTradeWindow() end
+end
