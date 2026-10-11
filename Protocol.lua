@@ -100,7 +100,7 @@ function QW:ReceiveWire(prefix, wire, sender)
   if kind then self:HandleMessage(kind, fields, sender) end
 end
 function QW:HandleMessage(kind, fields, sender)
-  local handlers = { TRADE_OFFER="ReceiveTradeOffer", TRADE_CONFIRM="ReceiveTradeConfirm", TRADE_COMMIT="ReceiveTradeCommit", TRADE_ACK="ReceiveTradeAck", TRADE_CANCEL="ReceiveTradeCancel", QUEST_SHARE="ReceiveQuest", QUEST_OFFER="ReceiveQuestOffer", QUEST_FOLLOWUP="ReceiveFollowUpQuest", QUEST_APPROVAL="ReceiveApproval", QUEST_APPROVED="ReceiveApprovalResult", QUEST_DELIVERY="ReceiveDelivery", QUEST_DELIVERY_ACK="ReceiveDeliveryAck" }
+  local handlers = { TRADE_OFFER="ReceiveTradeOffer", TRADE_CONFIRM="ReceiveTradeConfirm", TRADE_COMMIT="ReceiveTradeCommit", TRADE_ACK="ReceiveTradeAck", TRADE_CANCEL="ReceiveTradeCancel", QUEST_SHARE="ReceiveQuest", QUEST_OFFER="ReceiveQuestOffer", QUEST_FOLLOWUP="ReceiveFollowUpQuest", QUEST_APPROVAL="ReceiveApproval", QUEST_APPROVED="ReceiveApprovalResult", QUEST_DELIVERY="ReceiveDelivery", QUEST_DELIVERY_ACK="ReceiveDeliveryAck", NPC_DIALOGUE="ReceiveNPCDialogue" }
   local name = handlers[kind]
   if name and self[name] then self[name](self, fields, sender); if self.RefreshUI then self:RefreshUI() end end
 end

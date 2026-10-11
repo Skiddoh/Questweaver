@@ -1,8 +1,11 @@
 -- Questweaver: deliberately small, data-only cooperative RP addon.
 QW = QW or {}
-QW.RELEASE = "0.3.44"
-QW.VERSION = 6
-QW.PROTOCOL = 7
+QW.RELEASE = "0.3.49"
+-- Development convenience only: lets Maker add quest and reward definitions
+-- directly to the RP Satchel. Set this to false before publishing a release.
+QW.DEV_MAKER_SATCHEL_GRANTS = true
+QW.VERSION = 7
+QW.PROTOCOL = 9
 QW.PREFIX = "QW1"
 QW.CHANNEL = "WHISPER"
 QW.now = function() return time() end
@@ -89,7 +92,7 @@ function QW:OnLoad()
     elseif command=="active" or command=="activequests" then QW:ShowActiveQuests()
     elseif command=="quest" or command=="quests" then QW:ShowQuestJournal()
     elseif command=="sets" or command=="set" then QW:ShowSets()
-    elseif command=="conversation" or command=="conversations" then QW:OpenNewNPCDialogue()
+    elseif command=="conversation" or command=="conversations" or command=="dialogue" or command=="dialogues" or command=="story" or command=="stories" then QW:OpenNewNPCDialogue()
     elseif command=="interact" then local ok,message=QW:InteractWithTarget(); QW:Print(message or (ok and "Quest interaction complete.")); if QW.RefreshUI then QW:RefreshUI() end
     elseif command=="npcid" then local ok,message=QW:DescribeTargetNPC(); QW:Print(message or (ok and "NPC ID found."))
     elseif command=="killdebug" or command=="killdebug on" then

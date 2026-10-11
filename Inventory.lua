@@ -34,15 +34,55 @@ function QW:ValidateIcon(icon)
   if type(icon)=="number" then return icon>0 end
   return self:ValidateString(icon,160)
 end
-function QW:CreateItem(name, icon, description, stack, category)
+function QW:ParseLootChances(raw)
+  local rules, seen = {}, {}
+  if raw == nil or raw == "" then return rules end
+  if type(raw) ~= "string" or self.StrLen(raw) > 1200 then return nil, "Loot rules are too long." end
+  for entry in string.gmatch(raw, "[^;]+") do
+    local npcText, chanceText = string.match(entry, "^(%d+)~(%d+)$")
+    local npcID, chance = tonumber(npcText), tonumber(chanceText)
+    if not npcID or npcID < 1 or npcID > 99999999 or npcID ~= math.floor(npcID) or not chance or chance < 1 or chance > 100 or seen[npcID] then
+      return nil, "Enter unique NPC IDs and whole drop chances from 1 to 100, formatted NPCID~chance;..."
+    end
+    rules[#rules+1] = { npcID=npcID, chance=chance }; seen[npcID]=true
+    if #rules > 12 then return nil, "An item can have at most 12 NPC loot rules." end
+  end
+  return rules
+end
+function QW:CreateItem(name, icon, description, stack, category, lootChances)
   icon=self:NormalizeIcon(icon)
   stack = tonumber(stack) or 1
   category=self:NormalizeItemCategory(category or "misc")
   if not self:ValidateString(name, 80) or not self:ValidateIcon(icon) or not self:ValidateString(description, 500) or stack < 1 or stack > 999 or not category then return nil, "Use a name, icon, description, max stack (1-999), and valid category." end
+  lootChances=lootChances or {}
+  if type(lootChances)~="table" or #lootChances>12 then return nil,"Use at most 12 valid NPC loot rules." end
+  local normalizedLoot,seen={},{}
+  for _,rule in ipairs(lootChances) do
+    local npcID=tonumber(rule.npcID); local chance=tonumber(rule.chance)
+    if not npcID or npcID<1 or npcID>99999999 or npcID~=math.floor(npcID) or not chance or chance<1 or chance>100 or chance~=math.floor(chance) or seen[npcID] then return nil,"Loot rules need unique NPC IDs and whole chances from 1 to 100." end
+    normalizedLoot[#normalizedLoot+1]={npcID=npcID,chance=chance}; seen[npcID]=true
+  end
   local id = self:NewID("item")
-  self.db.items[id] = { id=id, name=name, icon=icon, description=description, maxStack=stack, category=category, creator=self.db.playerID, version=1 }
+  self.db.items[id] = { id=id, name=name, icon=icon, description=description, maxStack=stack, category=category, lootChances=normalizedLoot, creator=self.db.playerID, version=1 }
   if self.RefreshMakerInventory then self:RefreshMakerInventory() end
   return id
+end
+function QW:RollItemDrops(npcID,targetGUID,roll)
+  npcID=tonumber(npcID); if not npcID then return 0 end
+  local now=(GetTime and GetTime()) or self.now()
+  if targetGUID and self.lastLootKill and self.lastLootKill.guid==targetGUID and now-self.lastLootKill.time<2 then return 0 end
+  if targetGUID then self.lastLootKill={guid=targetGUID,time=now} end
+  local dropped=0
+  for _,item in pairs(self.db.items or {}) do
+    for _,rule in ipairs(item.lootChances or {}) do
+      if tonumber(rule.npcID)==npcID and (roll or math.random(1,100))<=tonumber(rule.chance) then
+        if self:AddItem(item,1) then dropped=dropped+1; self:Print("Looted "..item.name.." ("..rule.chance.."% chance).") end
+        break
+      end
+    end
+  end
+  if dropped>0 and self.RefreshUI then self:RefreshUI() end
+  return dropped
 end
 function QW:BuildItemHyperlink(itemID)
   local item=self.db.items[itemID]
@@ -60,6 +100,17 @@ function QW:ParseChatItemLink(link)
   return self.db.items[item.id] or item
 end
 function QW:HasItem(id, amount) return type(id)=="string" and (self.db.inventory[id] or 0) >= (tonumber(amount) or 0) end
+function QW:GetRPInventoryItems(category)
+  category=category or "all"
+  if category~="all" and not self:NormalizeItemCategory(category) then return {} end
+  local entries={}
+  for id,quantity in pairs(self.db.inventory or {}) do
+    local item=self.db.items[id]
+    if item and quantity>0 and (category=="all" or self:NormalizeItemCategory(item.category)==category) then entries[#entries+1]={item=item,quantity=quantity} end
+  end
+  table.sort(entries,function(a,b) return a.item.name<b.item.name end)
+  return entries
+end
 function QW:AddItem(def, amount)
   amount = tonumber(amount)
   local category=type(def)=="table" and self:NormalizeItemCategory(def.category) or nil
@@ -74,10 +125,10 @@ end
 function QW:GrantMakerItem(id,amount)
   amount=tonumber(amount); local item=self.db.items[id]
   if not item or not amount or amount<1 or amount>999 or amount~=math.floor(amount) then return false,"Choose an item and a whole quantity from 1 to 999." end
-  if item.category=="quest" or item.category=="reward" then return false,"Quest items and rewards can only enter the RP satchel through quest actions." end
+  if not self.DEV_MAKER_SATCHEL_GRANTS and (item.category=="quest" or item.category=="reward") then return false,"Quest items and rewards can only enter the RP satchel through quest actions." end
   if amount>(tonumber(item.maxStack) or 1) then return false,"That amount exceeds this item's max stack." end
   if not self:AddItem(item,amount) then return false,"The item could not be added to the RP satchel." end
-  return true,"Added "..amount.." x "..item.name.." to your RP satchel."
+  return true,"Added "..amount.." x "..item.name.." to your RP satchel."..(self.DEV_MAKER_SATCHEL_GRANTS and " (development grant)" or "")
 end
 function QW:CanDeleteMakerItem(id)
   local item=self.db.items[id]
@@ -87,12 +138,12 @@ function QW:CanDeleteMakerItem(id)
   for _,set in pairs(self.db.sets or {}) do for _,itemID in ipairs(set.itemIDs or {}) do if itemID==id then return false,"Remove this item from its Questweaver Sets first." end end end
   for _,quest in pairs(self.db.quests or {}) do
     if quest.rewardID==id or (quest.itemDefinitions and quest.itemDefinitions[id]) then return false,"This item is referenced by a quest definition." end
-    for _,step in ipairs(quest.steps or {}) do if step.itemID==id then return false,"This item is referenced by a quest objective." end end
+    for _,step in ipairs(quest.steps or {}) do if step.itemID==id then return false,"This item is referenced by a quest objective." end; for _,itemID in ipairs(step.itemIDs or {}) do if itemID==id then return false,"This item is referenced by a quest objective." end end end
   end
   for _,run in pairs(self.db.questRuns or {}) do
     if run.state~="complete" then
       if run.itemDefinitions and run.itemDefinitions[id] then return false,"This item is retained by an open quest." end
-      for _,step in ipairs(run.steps or {}) do if step.itemID==id then return false,"This item is referenced by an open quest objective." end end
+      for _,step in ipairs(run.steps or {}) do if step.itemID==id then return false,"This item is referenced by an open quest objective." end; for _,itemID in ipairs(step.itemIDs or {}) do if itemID==id then return false,"This item is referenced by an open quest objective." end end end
     end
   end
   for _,offer in pairs(self.db.questOffers or {}) do if offer.itemDefinitions and offer.itemDefinitions[id] then return false,"This item is referenced by a pending quest offer." end end

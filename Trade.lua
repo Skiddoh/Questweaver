@@ -14,7 +14,8 @@ local function formatOffer(offer)
 end
 function QW:SerializeItem(item)
   if type(item) ~= "table" then return "" end
-  return table.concat({self:Escape(item.id),self:Escape(item.name),self:Escape(item.icon),self:Escape(item.description),self:Escape(item.maxStack or 1),self:Escape(item.category or "misc")}, "~")
+  local loot={}; for i,rule in ipairs(item.lootChances or {}) do loot[i]=tostring(rule.npcID)..","..tostring(rule.chance) end
+  return table.concat({self:Escape(item.id),self:Escape(item.name),self:Escape(item.icon),self:Escape(item.description),self:Escape(item.maxStack or 1),self:Escape(item.category or "misc"),self:Escape(table.concat(loot,";"))}, "~")
 end
 function QW:ParseItem(text)
   local p, start = {}, 1
@@ -22,13 +23,19 @@ function QW:ParseItem(text)
     local at=string.find(text or "","~",start,true)
     if not at then p[QW.Count(p)+1]=string.sub(text or "",start); break end
     p[QW.Count(p)+1]=string.sub(text,start,at-1); start=at+1
-    if QW.Count(p)>6 then return nil end
+    if QW.Count(p)>7 then return nil end
   end
-  if QW.Count(p)~=5 and QW.Count(p)~=6 then return nil end
+  if QW.Count(p)~=5 and QW.Count(p)~=6 and QW.Count(p)~=7 then return nil end
   local i; for i=1,4 do p[i]=self:Unescape(p[i]); if not p[i] then return nil end end
   local n=tonumber(self:Unescape(p[5]) or ""); if not n then return nil end
   local category=p[6] and self:NormalizeItemCategory(self:Unescape(p[6])) or "misc"; if not category then return nil end
-  return {id=p[1],name=p[2],icon=QW:NormalizeIcon(p[3]),description=p[4],maxStack=n,category=category,version=1}
+  local lootChances={}
+  if p[7] then
+    local parsed,err=self:ParseLootChances(self:Unescape(p[7]) or "")
+    if not parsed then return nil end
+    lootChances=parsed
+  end
+  return {id=p[1],name=p[2],icon=QW:NormalizeIcon(p[3]),description=p[4],maxStack=n,category=category,lootChances=lootChances,version=1}
 end
 function QW:RegisterTrade() end
 function QW:StartTrade(target, itemID, count)

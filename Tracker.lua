@@ -14,7 +14,13 @@ function QW:GetQuestTrackerEntries()
           local step=run.steps[index]; local text="[Step "..self:ObjectiveStepNumber(step,index).."] "..(step.text or "Current objective")
           if step.type=="kill" then local progress=math.min((run.killProgress and run.killProgress[index]) or 0,step.count or 0); text=text.." ("..progress.."/"..(step.count or 0)..")"
           elseif step.type=="collect" or step.type=="loot" then text=text.." - "..(step.count or 1).." item(s)"
-          elseif step.type=="possess" or step.type=="deliver" then text=text.." - "..(step.count or 1).." required"
+          elseif step.type=="possess" or step.type=="deliver" then
+            local progress={}; for _,item in ipairs(self:GetObjectiveItemProgress(run,step,index)) do
+              local row=item.name.." "..item.have.."/"..item.required
+              if step.type=="deliver" then row=row.." satchel | hand to the target NPC" end
+              progress[self.Count(progress)+1]=row
+            end
+            text=text.." - "..table.concat(progress,"; ")
           elseif step.type=="visit" then text=text.." - visit the location"
           elseif step.type=="dialogue" then text=text.." - speak with the NPC" end
           active[self.Count(active)+1]=text

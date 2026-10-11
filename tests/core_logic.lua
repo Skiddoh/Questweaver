@@ -17,7 +17,7 @@ function time() return now end
 function SendAddonMessage() end
 assert(loadfile("Core.lua"))(); assert(loadfile("Protocol.lua"))(); assert(loadfile("Inventory.lua"))(); assert(loadfile("Trade.lua"))(); assert(loadfile("Quest.lua"))(); assert(loadfile("Tracker.lua"))(); assert(loadfile("Sets.lua"))()
 QW:InitDB()
-assert(QW.db.version==6)
+assert(QW.db.version==7)
 local shownNPC
 function QW:ShowNPCInteraction(npcID,npcName) shownNPC={id=npcID,name=npcName} end
 local function optionByID(list,id,kind) for _,option in ipairs(list or {}) do if option.id==id and option.kind==kind then return option end end end
@@ -26,6 +26,9 @@ assert(QW:GetRPTokenCount()==0 and QW:AddItem(QW.db.items[defaultToken],5) and Q
 assert(QW:TakeItem(defaultToken,2) and QW:GetRPTokenCount()==3 and QW:TakeItem(defaultToken,3) and QW:GetRPTokenCount()==0)
 local item=QW:CreateItem("Letter","Interface\\Icons\\INV_Letter_15","Test item",2,"misc"); assert(item and not QW:HasItem(item,1) and QW.db.items[item].category=="misc")
 assert(QW:GrantMakerItem(item,2) and QW:HasItem(item,2)); assert(not QW:GrantMakerItem(item,3))
+local miscSatchel=QW:GetRPInventoryItems("misc"); local allSatchel=QW:GetRPInventoryItems("all"); local sawItem=false
+for _,entry in ipairs(miscSatchel) do if entry.item.id==item then sawItem=true; assert(entry.quantity==2) end end
+assert(sawItem and #allSatchel>=#miscSatchel and #QW:GetRPInventoryItems("not-a-category")==0 and QW.db.inventory[item]==2)
 assert(not QW:DeleteMakerItem(item) and not QW:DeleteMakerItem(defaultToken))
 local itemLink,itemLinkError=QW:BuildItemHyperlink(item); assert(itemLink and string.find(itemLink,"|Hquestweaver:item:",1,true),itemLinkError)
 local linkData=string.match(itemLink,"|H(questweaver:item:[^|]+)|h"); local linkedItem=QW:ParseChatItemLink(linkData)
@@ -39,14 +42,38 @@ assert(not QW:RemoveRPItem(item,1.5) and not QW:RemoveRPItem(item,2) and QW.db.i
 local encoded=QW:SerializeItem({id="item:punct",name="A;B~C",icon="Interface\\Icons\\INV_Letter_15",description="A | B % C",maxStack=1,category="food"})
 local decoded=QW:ParseItem(encoded); assert(decoded and decoded.name=="A;B~C" and decoded.description=="A | B % C" and decoded.category=="food")
 assert(QW:ParseItem("old~Old%20Item~Interface%5CIcons%5CINV_Letter_15~Legacy~5").category=="misc")
+local lootRules=assert(QW:ParseLootChances("1984~25;2079~100")); assert(#lootRules==2 and lootRules[1].npcID==1984 and lootRules[1].chance==25)
+assert(not QW:ParseLootChances("1984~101") and not QW:ParseLootChances("1984~25;1984~50") and not QW:ParseLootChances("npc:1984~25"))
+local chanceItem=assert(QW:CreateItem("Boar Drop","Interface\\Icons\\INV_Misc_Note_01","A chance drop.",20,"misc",lootRules))
+local chanceDef=QW.db.items[chanceItem]; local chanceRoundtrip=QW:ParseItem(QW:SerializeItem(chanceDef))
+assert(chanceRoundtrip and #chanceRoundtrip.lootChances==2 and chanceRoundtrip.lootChances[2].npcID==2079 and chanceRoundtrip.lootChances[2].chance==100)
+local chanceBefore=QW.db.inventory[chanceItem] or 0
+assert(QW:RollItemDrops(1984,"drop-guid-success",1)==1 and QW.db.inventory[chanceItem]==chanceBefore+1)
+assert(QW:RollItemDrops(1984,"drop-guid-success",1)==0 and QW.db.inventory[chanceItem]==chanceBefore+1) -- duplicate kill event cannot duplicate loot
+assert(QW:RollItemDrops(1984,"drop-guid-fail",100)==0 and QW.db.inventory[chanceItem]==chanceBefore+1)
 assert(QW:ValidateIcon(134400)); assert(QW:NormalizeIcon("134400")==134400)
 local rewardItem=QW:CreateItem("Test reward","Interface\\Icons\\INV_Misc_Coin_01","Quest-only reward.",1)
 local q=QW:CreateQuest("Q","D",{{type="possess",itemID=item,count=1,text="Hold it"}},rewardItem,1); assert(q)
-assert(QW.db.items[item].category=="quest" and not QW:GrantMakerItem(item,1) and QW.db.items[rewardItem].category=="reward" and not QW:GrantMakerItem(rewardItem,1))
+assert(QW.db.items[item].category=="quest" and QW:GrantMakerItem(item,1) and QW.db.items[rewardItem].category=="reward" and QW:GrantMakerItem(rewardItem,1))
+assert(QW:TakeItem(item,1) and QW:TakeItem(rewardItem,1))
+QW.DEV_MAKER_SATCHEL_GRANTS=false
+assert(not QW:GrantMakerItem(item,1) and not QW:GrantMakerItem(rewardItem,1))
+QW.DEV_MAKER_SATCHEL_GRANTS=true
 local set=QW:SaveSet(nil,"Letter Story","A small two-part story.",{q},{item}); assert(set and QW.db.sets[set] and QW.db.sets[set].questIDs[1]==q and QW.db.sets[set].itemIDs[1]==item)
 assert(not QW:ParseSetQuestIDs(q..","..q)); assert(QW:SaveSet(set,"Letter Story","Updated story.",{q},{item}))
 assert(not QW:DeleteQuest(q)); assert(QW:DeleteSet(set) and not QW.db.sets[set] and QW.db.quests[q]); QW.db.questRuns[q]={id=q,state="active"}; assert(not QW:DeleteQuest(q)); QW.db.questRuns[q]=nil
 assert(QW:DeleteQuest(q) and not QW.db.quests[q]); assert(QW:DeleteMakerItem(rewardItem))
+-- A quest may award several different items, each with an independent count.
+local multiRewardOne=assert(QW:CreateItem("Reward One","Interface\\Icons\\INV_Misc_Coin_01","First multi reward.",10))
+local multiRewardTwo=assert(QW:CreateItem("Reward Two","Interface\\Icons\\INV_Misc_Coin_02","Second multi reward.",10))
+local multiRewardQuest=assert(QW:CreateQuest("Multiple rewards","D",{{type="manual",text="Confirm."}},{{id=multiRewardOne,count=2},{id=multiRewardTwo,count=3}}))
+assert(#QW.db.quests[multiRewardQuest].rewards==2 and QW.db.quests[multiRewardQuest].rewards[2].count==3)
+assert(QW:AssignQuestToCurrentPlayer(multiRewardQuest)); assert(QW:CompleteQuest(QW.db.questRuns[multiRewardQuest]))
+assert(QW.db.inventory[multiRewardOne]==2 and QW.db.inventory[multiRewardTwo]==3)
+QW.outbox={}; assert(QW:ShareQuest(multiRewardQuest,"Other"))
+local multiRewardChunks={}; for _,entry in ipairs(QW.outbox) do local _,part,_,payload=string.match(entry.wire,"^([^,]+),(%d+),(%d+),(.+)$"); multiRewardChunks[tonumber(part)]=payload end
+local kind,multiRewardFields=QW:Unpack(table.concat(multiRewardChunks)); assert(kind=="QUEST_SHARE" and multiRewardFields[20] and string.find(multiRewardFields[20],multiRewardTwo,1,true))
+QW.db.questRuns[multiRewardQuest]=nil; QW:ReceiveQuest(multiRewardFields,"Other"); assert(#QW.db.questRuns[multiRewardQuest].rewards==2 and QW.db.questRuns[multiRewardQuest].rewards[2].count==3)
 local disposable=QW:CreateItem("Disposable","Interface\\Icons\\INV_Misc_Note_01","Unused maker definition.",1,"misc")
 assert(disposable and not QW:HasItem(disposable,1) and QW:DeleteMakerItem(disposable) and not QW.db.items[disposable])
 QW.db.questRuns.run={id="run",owner="Other",steps={{type="possess",itemID=item,count=1,text="Hold"}},reward=def,rewardCount=1,index=1,state="active"}
@@ -59,7 +86,7 @@ local commit={"1","TRADE_COMMIT","inbound","1",item..",1"}
 QW:ReceiveTradeCommit(commit,"Other"); QW:ReceiveTradeCommit(commit,"Other")
 assert(QW.db.inventory[item]==before+1 and QW.db.trades.inbound.state=="complete")
 -- Delivery acceptance is likewise idempotent and returns an acknowledgement safely.
-local deliveryQuest=QW:CreateQuest("Return","D",{{type="deliver",itemID=item,count=1,text="Return it"}},item,1); assert(deliveryQuest)
+local deliveryQuest=QW:CreateQuest("Return","D",{{type="deliver",itemID=item,count=1,mobName="npc:1984",text="Return it"}},item,1); assert(deliveryQuest)
 local deliveryBefore=QW.db.inventory[item]
 local delivery={"1","QUEST_DELIVERY","delivery:1",deliveryQuest,"1",item,"1",QW:SerializeItem(def)}
 QW:ReceiveDelivery(delivery,"Other"); QW:ReceiveDelivery(delivery,"Other")
@@ -78,6 +105,34 @@ local book=QW:CreateItem("Library Book","Interface\\Icons\\INV_Misc_Book_09","Ta
 local bookBefore=QW.db.inventory[book] or 0
 QW.db.questRuns.collectRun={id="collectRun",owner="Other",steps={{type="collect",itemID=book,count=1,placeID="library",mobName="",text="Take the book"}},places=places,placeByID={library=places[1]},itemDefinitions={[book]=QW.db.items[book]},reward=def,rewardCount=1,index=1,state="active"}
 assert(QW:AdvanceQuest("collectRun")); assert(QW.db.inventory[book]==bookBefore+1)
+local scroll=QW:CreateItem("Library Scroll","Interface\\Icons\\INV_Misc_Note_01","A second library find.",5)
+local multiQuest=QW:CreateQuest("Gather two things","Collect both library finds.",{{type="collect",itemIDs={book,scroll},count=2,placeID="library",text="Collect both items."}},defaultToken,1,places,{book,scroll})
+assert(multiQuest and #QW.db.quests[multiQuest].steps[1].itemIDs==2)
+local multiStepWire=QW:Escape("collect").."~"..QW:Escape(book).."~2~"..QW:Escape("library").."~~"..QW:Escape("Collect both").."~1~"..QW:Escape(book..","..scroll)
+local multiParsed=QW:ParseSteps(multiStepWire); assert(multiParsed and #multiParsed[1].itemIDs==2 and multiParsed[1].itemIDs[2]==scroll)
+local multiBookBefore=QW.db.inventory[book] or 0; local multiScrollBefore=QW.db.inventory[scroll] or 0
+assert(QW:AssignQuestToCurrentPlayer(multiQuest)); assert(QW:AdvanceQuest(multiQuest))
+assert(QW.db.inventory[book]==multiBookBefore+2 and QW.db.inventory[scroll]==multiScrollBefore+2 and QW.db.questRuns[multiQuest].state=="complete")
+local deliveryMulti=QW:CreateQuest("Deliver both","Return both library finds.",{{type="deliver",itemIDs={book,scroll},count=1,mobName="npc:1984",text="Return both items."}},defaultToken,1,nil,{book,scroll})
+assert(deliveryMulti and QW:AssignQuestToCurrentPlayer(deliveryMulti))
+local deliverRun=QW.db.questRuns[deliveryMulti]; local returnBefore=QW.db.inventory[book]
+local beforeDeliveryProgress=QW:GetObjectiveItemProgress(deliverRun,deliverRun.steps[1],1); assert(beforeDeliveryProgress[1].have==returnBefore and beforeDeliveryProgress[1].required==1 and beforeDeliveryProgress[1].delivered==0)
+local deliveryTracker; for _,entry in ipairs(QW:GetQuestTrackerEntries()) do if entry.id==deliveryMulti then deliveryTracker=entry end end
+assert(deliveryTracker and string.find(deliveryTracker.objective,QW.db.items[book].name.." "..returnBefore.."/1",1,true))
+targetGUID="Creature-0-1-0-47-1984-0000000003"; targetName="Delivery NPC"
+local deliveryOptions=QW:GetNPCInteractionOptions(1984)
+assert(optionByID(deliveryOptions.progress,deliveryMulti,"delivery"))
+assert(QW:PerformNPCInteraction(optionByID(deliveryOptions.progress,deliveryMulti,"delivery"),1984) and not deliverRun.pendingDelivery and deliverRun.state=="complete" and QW.db.inventory[book]==returnBefore-1)
+assert(QW.db.inventory[scroll]==multiScrollBefore+1)
+assert(not QW:CreateQuest("No NPC delivery","D",{{type="deliver",itemID=book,count=1,text="This must fail."}},defaultToken,1,nil,{book}))
+-- An upgrade returns an unacknowledged old author-transfer to the recipient,
+-- preventing that delivery from permanently blocking the quest.
+local recoveryBefore=QW.db.inventory[item] or 0
+assert(QW:AddItem(def,5) and QW:TakeItem(item,5))
+QW.db.questRuns.oldDelivery={id="oldDelivery",title="Old delivery",state="active",steps={{type="deliver",itemID=item,itemIDs={item},count=5,mobName="npc:1984",npcID=1984,text="Hand these over."}},itemDefinitions={[item]=def},pendingDelivery={id="delivery:old",index=1,itemID=item,count=5,definition=def}}
+QW:MigrateDeliveriesToNPCHandoffs()
+assert(QW.db.questRuns.oldDelivery.deliveryMode=="npc" and not QW.db.questRuns.oldDelivery.pendingDelivery and QW.db.inventory[item]==recoveryBefore+5)
+QW.db.questRuns.oldDelivery=nil
 -- Automatic kill objectives count exact player kill names and finish without approval.
 local killSteps=QW:ParseSteps("kill~~5~~Junger Disteleber~Defeat five boars")
 assert(killSteps and killSteps[1].type=="kill" and killSteps[1].count==5 and killSteps[1].mobName=="Junger Disteleber")
@@ -217,6 +272,14 @@ assert(optionByID(conversationGroups.custom,conversationID,"npcdialogue") and op
 targetName="Librarian"; targetGUID="Creature-0-1-0-47-1984-0000000002"
 assert(QW:PerformNPCInteraction(optionByID(conversationGroups.custom,conversationID,"npcdialogue"),1984))
 assert(QW:PerformNPCInteraction(optionByID(conversationGroups.new,npcOfferQuest,"dialogquest"),1984) and QW.db.questRuns[npcOfferQuest].acceptedFromNPC==1984)
+-- Standalone NPC narratives do not require, create, or share quest offers.
+local narrativeID=QW:SaveNPCDialogue(nil,"npc:1984","Librarian","The old archive","The dust remembers\r\nevery name.",{})
+assert(narrativeID and #QW.db.npcDialogs[narrativeID].questIDs==0 and QW.db.npcDialogs[narrativeID].dialogue=="The dust remembers\nevery name.")
+local narrativeOutbox=QW.Count(QW.outbox); assert(QW:ShareNPCDialogue(narrativeID,"Other") and QW.Count(QW.outbox)>narrativeOutbox)
+QW:HandleMessage("NPC_DIALOGUE",{"9","NPC_DIALOGUE","npcdialog:remote-story","2","npc:1984","Librarian","A shared archive","A visitor left this account for you."},"Remote")
+assert(QW.db.npcDialogs["npcdialog:remote-story"] and QW.db.npcDialogs["npcdialog:remote-story"].owner=="Remote")
+local narrativeGroups=QW:GetNPCInteractionOptions(1984)
+assert(optionByID(narrativeGroups.custom,narrativeID,"npcdialogue") and optionByID(narrativeGroups.custom,"npcdialog:remote-story","npcdialogue"))
 targetGUID="Creature-0-1-0-47-1985-0000000001"; assert(not QW:AcceptQuestOffer(remoteOffer))
 targetGUID="Creature-0-1-0-47-1984-0000000001"; assert(QW:AcceptQuestOffer(remoteOffer) and QW.db.questRuns[remoteOffer] and not QW.db.questOffers[remoteOffer])
 -- NPC quest acceptance and dialogue objectives use the targeted NPC, never map coordinates.
@@ -239,5 +302,5 @@ assert(optionByID(demoOptions.new,boarDemo,"quest") and QW:PerformNPCInteraction
 assert(QW:InteractWithTarget()); demoOptions=QW:GetNPCInteractionOptions(2079); assert(not optionByID(demoOptions.new,boarDemo,"quest")) -- No duplicate offer after acceptance.
 assert(QW:ClearAcceptedQuests() and not QW.db.questRuns[boarDemo])
 QW.db.questRuns.pending={pendingDelivery={id="delivery:pending"}}
-assert(not QW:ClearAcceptedQuests()); QW.db.questRuns.pending=nil
+assert(QW:ClearAcceptedQuests()) -- Legacy pending states no longer block clearing accepted quests.
 print("Questweaver core logic tests passed")
